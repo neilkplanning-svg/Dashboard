@@ -218,9 +218,14 @@ function renderSectors() {
   SECTOR_FIELDS.forEach(f => html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`);
   html += `</tr></thead><tbody>`;
   SECTORS.forEach(sec => {
-    html += `<tr><td class="label">${sec}</td>`;
+    const sectorName = sec.name;
+    html += `<tr><td class="label">${sectorName}</td>`;
     SECTOR_FIELDS.forEach(f => {
-      html += `<td>${makeCell("sectors", sec, f.key, STATE.sectors[sec]?.[f.key], f.color)}</td>`;
+      if (f.key === "region") {
+        html += `<td>${sec.region}</td>`;
+      } else {
+        html += `<td>${makeCell("sectors", sectorName, f.key, STATE.sectors[sectorName]?.[f.key], f.color)}</td>`;
+      }
     });
     html += `</tr>`;
   });
@@ -230,11 +235,13 @@ function renderSectors() {
 }
 
 function renderCommodities() {
-  let html = `<thead><tr><th>סחורה</th><th>מחיר</th><th>שינוי יומי % (מ-Close אתמול)</th><th>יחידה</th></tr></thead><tbody>`;
+  let html = `<thead><tr><th>סחורה</th><th>מחיר</th><th>שינוי יומי %</th><th>שינוי מתחילת שנה %</th><th>שינוי 12 חודשים %</th><th>יחידה</th></tr></thead><tbody>`;
   COMMODITIES.forEach(c => {
     html += `<tr><td class="label">${c.name}</td>`;
     html += `<td>${makeCell("commodities", c.key, "price", STATE.commodities[c.key]?.price, false)}</td>`;
     html += `<td>${makeCell("commodities", c.key, "change_pct", STATE.commodities[c.key]?.change_pct, true)}</td>`;
+    html += `<td>${makeCell("commodities", c.key, "change_ytd", STATE.commodities[c.key]?.change_ytd, true)}</td>`;
+    html += `<td>${makeCell("commodities", c.key, "change_12m", STATE.commodities[c.key]?.change_12m, true)}</td>`;
     html += `<td>${c.unit}</td></tr>`;
   });
   html += `</tbody>`;
@@ -243,7 +250,7 @@ function renderCommodities() {
 }
 
 function renderCurrencies() {
-  let html = `<thead><tr><th>צמד</th><th>שם</th><th>שער</th><th>שינוי יומי % (מ-Close אתמול)</th></tr></thead><tbody>`;
+  let html = `<thead><tr><th>מטבע</th><th>שם</th><th>שער מול ₪</th><th>שינוי יומי %</th></tr></thead><tbody>`;
   CURRENCIES.forEach(c => {
     html += `<tr><td class="label">${c.key}</td><td>${c.name}</td>`;
     html += `<td>${makeCell("currencies", c.key, "rate", STATE.currencies[c.key]?.rate, false)}</td>`;
