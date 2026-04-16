@@ -454,7 +454,7 @@ const INDICES = [
   { sym: "INDA", stooq: "inda.us", key: "INDA", name: "India (INDA)", region: "🇮🇳" },
   { sym: "EIS", stooq: "eis.us", key: "EIS", name: "Israel (EIS)", region: "🇮🇱" },
   { sym: "^TA125.TA", stooq: "", key: "TA125", name: "ת״א 125", region: "🇮🇱" },
-  { sym: "^TA35.TA", stooq: "", key: "TA35", name: "ת״א 35", region: "🇮🇱" },
+  { sym: "TA35.TA", stooq: "", key: "TA35", name: "ת״א 35", region: "🇮🇱" },
   { sym: "EEM", stooq: "eem.us", key: "EEM", name: "MSCI EM (EEM)", region: "🌐" },
 ];
 
@@ -1109,6 +1109,49 @@ async function fetchAllFRED() {
   return results;
 }
 
+// ── World Bank API (macro data, free, no key needed) ────────────────────────
+
+const WB_COUNTRIES = "USA;EUU;JPN;CHN;IND;ISR";
+const WB_COUNTRY_MAP = { US: "US", EU: "EU", JP: "JP", CN: "CN", IN: "IN", IL: "IL" };
+const WB_INDICATORS = {
+  gdp_growth: "NY.GDP.MKTP.KD.ZG",
+  inflation: "FP.CPI.TOTL.ZG",
+  unemployment: "SL.UEM.TOTL.ZS",
+};
+
+async function fetchWorldBank() {
+  const results = {};
+  for (const [field, indicator] of Object.entries(WB_INDICATORS)) {
+    try {
+      const url = `https://api.worldbank.org/v2/country/${WB_COUNTRIES}/indicator/${indicator}?format=json&per_page=60&date=2020:2026`;
+      const resp = await fetchWithTimeout(url);
+      if (!resp.ok) continue;
+      const json = await resp.json();
+      const data = json[1]; // World Bank returns [metadata, data]
+      if (!Array.isArray(data)) continue;
+      // Group by country, pick most recent non-null value
+      const byCountry = {};
+      data.forEach(d => {
+        if (d.value === null) return;
+        const code = d.countryiso3code;
+        if (!byCountry[code] || parseInt(d.date) > parseInt(byCountry[code].date)) {
+          byCountry[code] = { value: d.value, date: d.date };
+        }
+      });
+      // Map to our region codes
+      const codeMap = { USA: "US", EUU: "EU", JPN: "JP", CHN: "CN", IND: "IN", ISR: "IL" };
+      Object.entries(byCountry).forEach(([iso3, val]) => {
+        const region = codeMap[iso3];
+        if (!region) return;
+        if (!results[region]) results[region] = {};
+        results[region][field] = val.value;
+        results[region][field + "_year"] = val.date;
+      });
+    } catch(e) { console.warn(`WB ${field}:`, e.message); }
+  }
+  return results;
+}
+
 // ── Test Connection ─────────────────────────────────────────────────────────
 
 async function testApi() {
@@ -1372,7 +1415,22 @@ async function fetchAllData() {
     }
   } catch(e) { console.warn("BOI:", e.message); }
 
-  // 6. FRED — Macro data (interest, inflation, unemployment)
+  // 6. World Bank — Macro data: GDP, inflation, unemployment (free, no key)
+  try {
+    showStatus("שולף נתוני מאקרו מ-World Bank...", "success");
+    const wb = await fetchWorldBank();
+    let wbOk = 0;
+    Object.entries(wb).forEach(([region, data]) => {
+      if (!STATE.macro[region]) STATE.macro[region] = {};
+      if (data.gdp_growth !== undefined) { STATE.macro[region].gdp_growth = data.gdp_growth.toFixed(2); wbOk++; }
+      if (data.inflation !== undefined) { STATE.macro[region].inflation = data.inflation.toFixed(2); wbOk++; }
+      if (data.unemployment !== undefined) { STATE.macro[region].unemployment = data.unemployment.toFixed(2); wbOk++; }
+    });
+    if (wbOk > 0) { updateTimestamp("macro"); successCount++; }
+    else errors.push("מאקרו: World Bank");
+  } catch(e) { errors.push("World Bank: " + e.message); }
+
+  // 7. FRED — Macro data override with more current data (optional, needs key)
   if (STATE.fredApiKey) {
     try {
       showStatus("שולף נתוני מאקרו מ-FRED...", "success");
