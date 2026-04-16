@@ -258,7 +258,7 @@ select.form-input { min-width: 120px; }
   <div id="apiBar" class="api-bar">
     <div style="width:100%;display:flex;flex-direction:column;gap:8px">
       <div style="padding:8px 12px;background:rgba(34,197,94,0.1);border-radius:6px;color:var(--green);font-size:12px">
-        ✓ כברירת מחדל, הדשבורד משתמש ב-<b>Stooq.com</b> (חינמי, בלי API key, בלי מגבלה). המפתחות למטה הם רק אם תרצה מקורות נוספים.
+        ✓ כברירת מחדל, הדשבורד משתמש ב-<b>Yahoo Finance</b> + <b>בנק ישראל</b> (חינמי, בלי API key). המפתחות למטה הם למקורות נוספים.
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="color:var(--text-faint);font-size:12px;min-width:150px">Twelve Data (אופציונלי):</span>
@@ -267,6 +267,10 @@ select.form-input { min-width: 120px; }
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="color:var(--text-faint);font-size:12px;min-width:150px">FMP (לסקטורים):</span>
         <input id="apiKeyInput" placeholder="אופציונלי — רק לנתוני סקטורים" style="flex:1;min-width:200px;font-size:12px" />
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="color:var(--text-faint);font-size:12px;min-width:150px">FRED (מאקרו):</span>
+        <input id="fredApiKeyInput" placeholder="אופציונלי — נתוני ריבית, אינפלציה, אבטלה · fred.stlouisfed.org" style="flex:1;min-width:200px;font-size:12px" />
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-success btn-small" onclick="saveApiKey()">שמור</button>
@@ -432,9 +436,9 @@ const REGIONS = [
 
 const MACRO_FIELDS = [
   { key: "gdp_growth", label: "צמיחת GDP %", manual: true },
-  { key: "inflation", label: "אינפלציה %", manual: true },
-  { key: "interest_rate", label: "ריבית %", manual: true },
-  { key: "unemployment", label: "אבטלה %", manual: true },
+  { key: "inflation", label: "אינפלציה %", manual: false },
+  { key: "interest_rate", label: "ריבית %", manual: false },
+  { key: "unemployment", label: "אבטלה %", manual: false },
   { key: "pmi", label: "PMI", manual: true },
   { key: "debt_to_gdp", label: "חוב/תמ״ג %", manual: true },
 ];
@@ -449,6 +453,8 @@ const INDICES = [
   { sym: "FXI", stooq: "fxi.us", key: "FXI", name: "China (FXI)", region: "🇨🇳" },
   { sym: "INDA", stooq: "inda.us", key: "INDA", name: "India (INDA)", region: "🇮🇳" },
   { sym: "EIS", stooq: "eis.us", key: "EIS", name: "Israel (EIS)", region: "🇮🇱" },
+  { sym: "^TA125.TA", stooq: "", key: "TA125", name: "ת״א 125", region: "🇮🇱" },
+  { sym: "^TA35.TA", stooq: "", key: "TA35", name: "ת״א 35", region: "🇮🇱" },
   { sym: "EEM", stooq: "eem.us", key: "EEM", name: "MSCI EM (EEM)", region: "🌐" },
 ];
 
@@ -521,6 +527,7 @@ let STATE = {
   timestamps: {},
   apiKey: "",
   tdApiKey: "",
+  fredApiKey: "",
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -614,6 +621,7 @@ function toggleApiBar() {
   document.getElementById("apiBar").classList.toggle("show");
   document.getElementById("apiKeyInput").value = STATE.apiKey || "";
   document.getElementById("tdApiKeyInput").value = STATE.tdApiKey || "";
+  document.getElementById("fredApiKeyInput").value = STATE.fredApiKey || "";
 }
 
 function toggleDataBar() {
@@ -623,6 +631,7 @@ function toggleDataBar() {
 function saveApiKey() {
   STATE.apiKey = document.getElementById("apiKeyInput").value.trim();
   STATE.tdApiKey = document.getElementById("tdApiKeyInput").value.trim();
+  STATE.fredApiKey = document.getElementById("fredApiKeyInput").value.trim();
   saveState();
   document.getElementById("apiBar").classList.remove("show");
   showStatus("המפתחות נשמרו", "success");
@@ -1033,6 +1042,73 @@ async function fmpFetch(path) {
   return resp.json();
 }
 
+// ── Bank of Israel API (שער יציג, no key needed) ────────────────────────────
+
+async function fetchBOI() {
+  const today = new Date().toISOString().slice(0, 10);
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const url = `https://www.boi.org.il/PublicApi/GetExchangeRates?DateFrom=${weekAgo}&DateTo=${today}&Lang=he`;
+  const resp = await fetchWithProxy(url);
+  const text = await resp.text();
+  let data;
+  try { data = JSON.parse(text); } catch(e) { return null; }
+  if (!data.exchangeRates || !Array.isArray(data.exchangeRates)) return null;
+  return data.exchangeRates;
+}
+
+// ── FRED API (macro data, requires free API key) ────────────────────────────
+
+const FRED_SERIES = {
+  // US macro
+  US_interest: "FEDFUNDS",
+  US_inflation: "CPIAUCSL",
+  US_unemployment: "UNRATE",
+  // Israel macro
+  IL_interest: "IRSTCB01ILM156N",
+  IL_inflation: "ISRCPIALLMINMEI",
+  // Europe
+  EU_interest: "ECBMRRFR",
+  EU_inflation: "EA19CPALTT01GYM",
+  EU_unemployment: "LRHUTTTTEZM156S",
+  // Japan
+  JP_interest: "IRSTCB01JPM156N",
+  JP_inflation: "JPNCPIALLMINMEI",
+  JP_unemployment: "LRHUTTTTJPM156S",
+  // China
+  CN_interest: "IRSTCB01CNM156N",
+  CN_inflation: "CHNCPIALLMINMEI",
+};
+
+async function fredFetch(seriesId) {
+  if (!STATE.fredApiKey) throw new Error("No FRED key");
+  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${STATE.fredApiKey}&file_type=json&sort_order=desc&limit=1`;
+  const resp = await fetchWithTimeout(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  const obs = data.observations?.[0];
+  if (!obs || obs.value === ".") return null;
+  return { value: parseFloat(obs.value), date: obs.date };
+}
+
+async function fetchAllFRED() {
+  const results = {};
+  const entries = Object.entries(FRED_SERIES);
+  // Fetch in batches of 4 to avoid rate limiting
+  for (let i = 0; i < entries.length; i += 4) {
+    const batch = entries.slice(i, i + 4);
+    const batchResults = await Promise.all(
+      batch.map(async ([key, series]) => {
+        try {
+          const r = await fredFetch(series);
+          return [key, r];
+        } catch(e) { console.warn(`FRED ${key}:`, e.message); return [key, null]; }
+      })
+    );
+    batchResults.forEach(([key, val]) => { if (val) results[key] = val; });
+  }
+  return results;
+}
+
 // ── Test Connection ─────────────────────────────────────────────────────────
 
 async function testApi() {
@@ -1059,6 +1135,21 @@ async function testApi() {
       } catch(e2) { showStatus(`✕ שני המקורות נכשלו. Yahoo: ${e.message}. TD: ${e2.message}`, "error"); return; }
     }
     showStatus(`✕ Yahoo Finance נכשל: ${e.message}. הוסף Twelve Data key כגיבוי.`, "error");
+  }
+  // Also test BOI
+  try {
+    const boi = await fetchBOI();
+    if (boi && boi.length > 0) {
+      const usd = boi.find(r => r.key === "USD");
+      if (usd) console.log(`BOI ✓ USD/ILS = ${usd.currentExchangeRate}`);
+    }
+  } catch(e) { console.warn("BOI test:", e.message); }
+  // Also test FRED
+  if (STATE.fredApiKey) {
+    try {
+      const r = await fredFetch("FEDFUNDS");
+      if (r) console.log(`FRED ✓ Fed Funds = ${r.value}%`);
+    } catch(e) { console.warn("FRED test:", e.message); }
   }
 }
 
@@ -1242,6 +1333,87 @@ async function fetchAllData() {
         });
       }
     } catch(e) { console.warn("FMP Sectors:", e.message); }
+  }
+
+  // 5. BOI — Bank of Israel representative exchange rates (שער יציג)
+  try {
+    showStatus("שולף שערי יציג מבנק ישראל...", "success");
+    const boiRates = await fetchBOI();
+    if (boiRates && boiRates.length > 0) {
+      let boiOk = 0;
+      const boiMap = { USD: "USD/ILS", EUR: "EUR/ILS", GBP: "GBP/ILS", JPY: "JPY/ILS" };
+      boiRates.forEach(r => {
+        const pair = boiMap[r.key];
+        if (pair) {
+          if (!STATE.currencies[pair]) STATE.currencies[pair] = {};
+          const rate = r.unit > 1 ? (r.currentExchangeRate / r.unit) : r.currentExchangeRate;
+          STATE.currencies[pair].rate = rate.toFixed(4);
+          STATE.currencies[pair].change_pct = parseFloat(r.currentChange || 0).toFixed(2);
+          STATE.currencies[pair].source = "בנק ישראל";
+          boiOk++;
+        }
+      });
+      // Overwrite USD/ILS and EUR/ILS with official BOI rate
+      const usd = boiRates.find(r => r.key === "USD");
+      if (usd) {
+        if (!STATE.currencies["USD/ILS"]) STATE.currencies["USD/ILS"] = {};
+        STATE.currencies["USD/ILS"].rate = usd.currentExchangeRate.toFixed(4);
+        STATE.currencies["USD/ILS"].change_pct = parseFloat(usd.currentChange || 0).toFixed(2);
+        STATE.currencies["USD/ILS"].source = "שער יציג";
+      }
+      const eur = boiRates.find(r => r.key === "EUR");
+      if (eur) {
+        if (!STATE.currencies["EUR/ILS"]) STATE.currencies["EUR/ILS"] = {};
+        STATE.currencies["EUR/ILS"].rate = eur.currentExchangeRate.toFixed(4);
+        STATE.currencies["EUR/ILS"].change_pct = parseFloat(eur.currentChange || 0).toFixed(2);
+        STATE.currencies["EUR/ILS"].source = "שער יציג";
+      }
+      if (boiOk > 0) { updateTimestamp("currencies"); if (!successCount) successCount++; }
+    }
+  } catch(e) { console.warn("BOI:", e.message); }
+
+  // 6. FRED — Macro data (interest, inflation, unemployment)
+  if (STATE.fredApiKey) {
+    try {
+      showStatus("שולף נתוני מאקרו מ-FRED...", "success");
+      const fred = await fetchAllFRED();
+      let macroOk = 0;
+      // Map FRED results to STATE.macro
+      const mapping = [
+        ["US_interest", "US", "interest_rate"],
+        ["US_unemployment", "US", "unemployment"],
+        ["IL_interest", "IL", "interest_rate"],
+        ["EU_interest", "EU", "interest_rate"],
+        ["EU_unemployment", "EU", "unemployment"],
+        ["JP_interest", "JP", "interest_rate"],
+        ["JP_unemployment", "JP", "unemployment"],
+        ["CN_interest", "CN", "interest_rate"],
+      ];
+      mapping.forEach(([fredKey, region, field]) => {
+        if (fred[fredKey]) {
+          if (!STATE.macro[region]) STATE.macro[region] = {};
+          STATE.macro[region][field] = fred[fredKey].value.toFixed(2);
+          macroOk++;
+        }
+      });
+      // Inflation from FRED is index-based (CPI), need YoY calculation
+      // For CPI series, the value is already YoY % for some series
+      const inflationMapping = [
+        ["US_inflation", "US"],
+        ["IL_inflation", "IL"],
+        ["EU_inflation", "EU"],
+        ["JP_inflation", "JP"],
+        ["CN_inflation", "CN"],
+      ];
+      inflationMapping.forEach(([fredKey, region]) => {
+        if (fred[fredKey]) {
+          if (!STATE.macro[region]) STATE.macro[region] = {};
+          STATE.macro[region].inflation = fred[fredKey].value.toFixed(2);
+          macroOk++;
+        }
+      });
+      if (macroOk > 0) { updateTimestamp("macro"); successCount++; }
+    } catch(e) { errors.push("FRED: " + e.message); }
   }
 
   saveState();
