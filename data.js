@@ -41,12 +41,14 @@ const INDEX_FIELDS = [
   { key: "price", label: "מחיר", color: false },
   { key: "ytd", label: "שינוי יומי %", color: true, tooltip: "שינוי מ-Close אתמול" },
   { key: "change_ytd", label: "שינוי מתחילת שנה %", color: true },
+  { key: "change_12m", label: "שינוי 12 חודשים %", color: true },
   { key: "pct_from_high_10y", label: "מרחק משיא 10Y %", color: true },
   { key: "pct_from_low_10y", label: "מרחק משפל 10Y %", color: true },
   { key: "pe_current", label: "P/E נוכחי", color: false },
   { key: "pe_historical_avg", label: "P/E ממוצע היסטורי", color: false, manual: true },
   { key: "pe_forward", label: "P/E עתידי", color: false, manual: true },
   { key: "shiller_cape", label: "Shiller CAPE", color: false, manual: true },
+  { key: "ref_change", label: "שינוי מרפרנס %", color: true, ref: true },
   { key: "div_yield", label: "תשואת דיב׳ %", color: false, manual: true },
 ];
 
