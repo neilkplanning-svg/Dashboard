@@ -466,6 +466,12 @@ const SECTORS = [
   "Consumer Staples","Industrials","Materials","Real Estate","Utilities","Communication Services"
 ];
 
+const SECTOR_ETFS = {
+  "Technology": "XLK", "Healthcare": "XLV", "Financials": "XLF", "Energy": "XLE",
+  "Consumer Discretionary": "XLY", "Consumer Staples": "XLP", "Industrials": "XLI",
+  "Materials": "XLB", "Real Estate": "XLRE", "Utilities": "XLU", "Communication Services": "XLC"
+};
+
 const SECTOR_FIELDS = [
   { key: "ytd", label: "שינוי יומי %", color: true },
   { key: "pe", label: "P/E", color: false },
@@ -483,12 +489,12 @@ const COMMODITIES = [
 ];
 
 const CURRENCIES = [
-  { sym: "USDILS", key: "USD/ILS", name: "דולר/שקל" },
-  { sym: "EURUSD", key: "EUR/USD", name: "אירו/דולר" },
-  { sym: "USDJPY", key: "USD/JPY", name: "דולר/ין" },
-  { sym: "USDCNY", key: "USD/CNY", name: "דולר/יואן" },
-  { sym: "GBPUSD", key: "GBP/USD", name: "ליש״ט/דולר" },
-  { sym: "EURILS", key: "EUR/ILS", name: "אירו/שקל" },
+  { sym: "USDILS", yahoo: "USDILS=X", key: "USD/ILS", name: "דולר/שקל" },
+  { sym: "EURUSD", yahoo: "EURUSD=X", key: "EUR/USD", name: "אירו/דולר" },
+  { sym: "USDJPY", yahoo: "USDJPY=X", key: "USD/JPY", name: "דולר/ין" },
+  { sym: "USDCNY", yahoo: "USDCNY=X", key: "USD/CNY", name: "דולר/יואן" },
+  { sym: "GBPUSD", yahoo: "GBPUSD=X", key: "GBP/USD", name: "ליש״ט/דולר" },
+  { sym: "EURILS", yahoo: "EURILS=X", key: "EUR/ILS", name: "אירו/שקל" },
 ];
 
 const FEAR_INDICATORS = [
@@ -1182,32 +1188,43 @@ async function fetchAllData() {
     } catch(e) { errors.push("TD: " + e.message); }
   }
 
-  // 3. FOREX via Frankfurter (always works, no key)
+  // 3. FOREX via Yahoo Finance (supports all pairs including ILS, CNY)
   try {
-    const baseSet = new Set();
-    CURRENCIES.forEach(c => baseSet.add(c.key.split("/")[0]));
+    showStatus("שולף שערי מטבעות מ-Yahoo Finance...", "success");
+    const fxSymbols = CURRENCIES.map(c => c.yahoo);
+    const fxResults = await yahooBatch(fxSymbols);
     let fxOk = 0;
-    for (const base of baseSet) {
-      try {
-        const targets = CURRENCIES.filter(c => c.key.startsWith(base + "/")).map(c => c.key.split("/")[1]).join(",");
-        const resp = await fetchWithTimeout(`https://api.frankfurter.app/latest?from=${base}&to=${targets}`);
-        if (!resp.ok) continue;
-        const d = await resp.json();
-        if (d.rates) {
-          Object.entries(d.rates).forEach(([target, rate]) => {
-            const key = `${base}/${target}`;
-            if (!STATE.currencies[key]) STATE.currencies[key] = {};
-            STATE.currencies[key].rate = rate.toFixed(4);
-            fxOk++;
-          });
-        }
-      } catch(e) {}
-    }
+    fxResults.forEach(q => {
+      const curr = CURRENCIES.find(c => c.yahoo === q.symbol);
+      if (!curr) return;
+      if (!STATE.currencies[curr.key]) STATE.currencies[curr.key] = {};
+      STATE.currencies[curr.key].rate = q.price.toFixed(4);
+      STATE.currencies[curr.key].change_pct = q.change_pct.toFixed(2);
+      fxOk++;
+    });
     if (fxOk > 0) { updateTimestamp("currencies"); successCount++; }
-    else errors.push("מט״ח: Frankfurter");
+    else errors.push("מט״ח: Yahoo");
   } catch(e) { errors.push("מט״ח: " + e.message); }
 
-  // 4. SECTORS via FMP (optional)
+  // 4. SECTORS via Yahoo Finance sector ETFs (free, no key needed)
+  try {
+    showStatus("שולף ביצועי סקטורים מ-Yahoo Finance...", "success");
+    const sectorSymbols = Object.values(SECTOR_ETFS);
+    const sectorResults = await yahooBatch(sectorSymbols);
+    let secOk = 0;
+    Object.entries(SECTOR_ETFS).forEach(([sectorName, etfSym]) => {
+      const q = sectorResults.find(r => r.symbol === etfSym);
+      if (!q) return;
+      if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
+      STATE.sectors[sectorName].ytd = q.change_pct.toFixed(2);
+      STATE.sectors[sectorName].price = q.price.toFixed(2);
+      secOk++;
+    });
+    if (secOk > 0) { updateTimestamp("sectors"); successCount++; }
+    else errors.push("סקטורים: Yahoo");
+  } catch(e) { errors.push("סקטורים: " + e.message); }
+
+  // 4b. SECTORS extra data via FMP (optional, if API key exists)
   if (STATE.apiKey) {
     try {
       const today = new Date().toISOString().slice(0, 10);
@@ -1221,12 +1238,10 @@ async function fetchAllData() {
         sectors.forEach(s => {
           const name = s.sector;
           if (!STATE.sectors[name]) STATE.sectors[name] = {};
-          STATE.sectors[name].ytd = parseFloat(s.averageChange || 0).toFixed(2);
+          if (s.averageChange) STATE.sectors[name].ytd = parseFloat(s.averageChange).toFixed(2);
         });
-        updateTimestamp("sectors");
-        successCount++;
       }
-    } catch(e) { console.warn("Sectors:", e.message); }
+    } catch(e) { console.warn("FMP Sectors:", e.message); }
   }
 
   saveState();
