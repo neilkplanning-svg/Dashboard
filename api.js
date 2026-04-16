@@ -225,6 +225,60 @@ async function fetchWorldBank() {
   return results;
 }
 
+// ── Yahoo Finance Historical Data ──────────────────────────────────────────
+
+async function yahooHistorical(symbol, range = "10y") {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1mo&range=${range}`;
+  const resp = await fetchWithProxy(url);
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); } catch(e) { return null; }
+  const result = json.chart?.result?.[0];
+  if (!result) return null;
+  const quotes = result.indicators?.quote?.[0];
+  if (!quotes || !quotes.high) return null;
+  const highs = quotes.high.filter(v => v !== null);
+  const lows = quotes.low.filter(v => v !== null);
+  const closes = quotes.close.filter(v => v !== null);
+  return {
+    high_10y: Math.max(...highs),
+    low_10y: Math.min(...lows),
+    first_close: closes[0] || null,  // price at start of range
+    last_close: closes[closes.length - 1] || null,
+  };
+}
+
+async function yahooYTDChange(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=ytd`;
+  const resp = await fetchWithProxy(url);
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); } catch(e) { return null; }
+  const result = json.chart?.result?.[0];
+  if (!result) return null;
+  const meta = result.meta;
+  const price = meta.regularMarketPrice;
+  const prevClose = meta.chartPreviousClose || price;
+  const closes = result.indicators?.quote?.[0]?.close?.filter(v => v !== null);
+  const startPrice = closes?.[0] || prevClose;
+  return startPrice ? ((price - startPrice) / startPrice * 100) : 0;
+}
+
+async function yahoo12MChange(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
+  const resp = await fetchWithProxy(url);
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); } catch(e) { return null; }
+  const result = json.chart?.result?.[0];
+  if (!result) return null;
+  const meta = result.meta;
+  const price = meta.regularMarketPrice;
+  const closes = result.indicators?.quote?.[0]?.close?.filter(v => v !== null);
+  const startPrice = closes?.[0] || price;
+  return startPrice ? ((price - startPrice) / startPrice * 100) : 0;
+}
+
 // ── Test Connection ─────────────────────────────────────────────────────────
 
 async function testApi() {
@@ -349,6 +403,69 @@ async function fetchAllData() {
     errors.push("Yahoo: " + e.message);
   }
 
+  // 1b. Fetch 10Y high/low and YTD for indices
+  if (yahooWorked) {
+    try {
+      showStatus("שולף נתוני 10Y שיא/שפל + שינוי מתחילת שנה...", "success");
+      for (const idx of INDICES) {
+        try {
+          const hist = await yahooHistorical(idx.sym, "10y");
+          if (hist && STATE.indices[idx.key]) {
+            const price = parseFloat(STATE.indices[idx.key].price);
+            if (hist.high_10y) STATE.indices[idx.key].pct_from_high_10y = ((price - hist.high_10y) / hist.high_10y * 100).toFixed(2);
+            if (hist.low_10y) STATE.indices[idx.key].pct_from_low_10y = ((price - hist.low_10y) / hist.low_10y * 100).toFixed(2);
+          }
+          const ytdChange = await yahooYTDChange(idx.sym);
+          if (ytdChange !== null && STATE.indices[idx.key]) {
+            STATE.indices[idx.key].change_ytd = ytdChange.toFixed(2);
+          }
+        } catch(e) { console.warn(`Historical ${idx.sym}:`, e.message); }
+      }
+    } catch(e) { console.warn("Historical data:", e.message); }
+  }
+
+  // 1c. Fetch YTD and 12M change for sector ETFs
+  if (yahooWorked) {
+    try {
+      showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
+      for (const [sectorName, etfSym] of Object.entries(SECTOR_ETFS)) {
+        try {
+          const ytdChange = await yahooYTDChange(etfSym);
+          if (ytdChange !== null) {
+            if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
+            STATE.sectors[sectorName].change_ytd = ytdChange.toFixed(2);
+          }
+          const m12Change = await yahoo12MChange(etfSym);
+          if (m12Change !== null) {
+            if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
+            STATE.sectors[sectorName].change_12m = m12Change.toFixed(2);
+          }
+        } catch(e) { console.warn(`Sector hist ${etfSym}:`, e.message); }
+      }
+    } catch(e) { console.warn("Sector historical:", e.message); }
+  }
+
+  // 1d. Fetch YTD and 12M change for commodities
+  if (yahooWorked) {
+    try {
+      showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסחורות...", "success");
+      for (const c of COMMODITIES) {
+        try {
+          const ytdChange = await yahooYTDChange(c.sym);
+          if (ytdChange !== null) {
+            if (!STATE.commodities[c.key]) STATE.commodities[c.key] = {};
+            STATE.commodities[c.key].change_ytd = ytdChange.toFixed(2);
+          }
+          const m12Change = await yahoo12MChange(c.sym);
+          if (m12Change !== null) {
+            if (!STATE.commodities[c.key]) STATE.commodities[c.key] = {};
+            STATE.commodities[c.key].change_12m = m12Change.toFixed(2);
+          }
+        } catch(e) { console.warn(`Commodity hist ${c.sym}:`, e.message); }
+      }
+    } catch(e) { console.warn("Commodity historical:", e.message); }
+  }
+
   // 2. If Yahoo failed and Twelve Data key exists — use TD as fallback
   if (!yahooWorked && STATE.tdApiKey) {
     showStatus("Yahoo נכשל, עובר ל-Twelve Data...", "success");
@@ -400,19 +517,59 @@ async function fetchAllData() {
     } catch(e) { errors.push("TD: " + e.message); }
   }
 
-  // 3. FOREX via Yahoo Finance (supports all pairs including ILS, CNY)
+  // 3. FOREX — All currencies normalized to ILS
   try {
-    showStatus("שולף שערי מטבעות מ-Yahoo Finance...", "success");
-    const fxSymbols = CURRENCIES.map(c => c.yahoo);
-    const fxResults = await yahooBatch(fxSymbols);
+    showStatus("שולף שערי מטבעות מול שקל...", "success");
+    // First fetch all needed Yahoo symbols
+    const directSymbols = CURRENCIES.filter(c => c.direct && c.yahoo).map(c => c.yahoo);
+    const crossSymbols = new Set();
+    CURRENCIES.filter(c => c.cross).forEach(c => c.cross.forEach(s => crossSymbols.add(s)));
+    const allFxSymbols = [...new Set([...directSymbols, ...crossSymbols])];
+    const fxResults = await yahooBatch(allFxSymbols);
+    const fxPrices = {};
+    fxResults.forEach(q => { fxPrices[q.symbol] = q; });
+
     let fxOk = 0;
-    fxResults.forEach(q => {
-      const curr = CURRENCIES.find(c => c.yahoo === q.symbol);
-      if (!curr) return;
+    CURRENCIES.forEach(curr => {
       if (!STATE.currencies[curr.key]) STATE.currencies[curr.key] = {};
-      STATE.currencies[curr.key].rate = q.price.toFixed(4);
-      STATE.currencies[curr.key].change_pct = q.change_pct.toFixed(2);
-      fxOk++;
+
+      if (curr.direct && curr.yahoo && fxPrices[curr.yahoo]) {
+        const q = fxPrices[curr.yahoo];
+        STATE.currencies[curr.key].rate = q.price.toFixed(4);
+        STATE.currencies[curr.key].change_pct = q.change_pct.toFixed(2);
+        fxOk++;
+      } else if (curr.cross && curr.crossCalc) {
+        // Cross-calculate
+        const q1 = fxPrices[curr.cross[0]]; // e.g., USDJPY=X
+        const q2 = fxPrices[curr.cross[1]]; // e.g., USDILS=X
+        if (q1 && q2) {
+          let rate;
+          if (curr.crossCalc === "ils_div_rate") {
+            // JPY/ILS = USDILS / USDJPY (for 1 unit), but JPY shows as 100
+            rate = q2.price / q1.price;
+            if (curr.key === "JPY/ILS") rate = rate * 100; // Show per 100 JPY
+          } else if (curr.crossCalc === "usd_mult") {
+            // AUD/ILS = AUDUSD * USDILS
+            rate = q1.price * q2.price;
+          }
+          if (rate) {
+            STATE.currencies[curr.key].rate = rate.toFixed(4);
+            // Approximate change
+            const prevRate1 = q1.price / (1 + q1.change_pct/100);
+            const prevRate2 = q2.price / (1 + q2.change_pct/100);
+            let prevRate;
+            if (curr.crossCalc === "ils_div_rate") {
+              prevRate = prevRate2 / prevRate1;
+              if (curr.key === "JPY/ILS") prevRate *= 100;
+            } else {
+              prevRate = prevRate1 * prevRate2;
+            }
+            const changePct = prevRate ? ((rate - prevRate) / prevRate * 100) : 0;
+            STATE.currencies[curr.key].change_pct = changePct.toFixed(2);
+            fxOk++;
+          }
+        }
+      }
     });
     if (fxOk > 0) { updateTimestamp("currencies"); successCount++; }
     else errors.push("מט״ח: Yahoo");
@@ -474,7 +631,7 @@ async function fetchAllData() {
           boiOk++;
         }
       });
-      // Overwrite USD/ILS and EUR/ILS with official BOI rate
+      // Overwrite USD/ILS, EUR/ILS, GBP/ILS with official BOI rate
       const usd = boiRates.find(r => r.key === "USD");
       if (usd) {
         if (!STATE.currencies["USD/ILS"]) STATE.currencies["USD/ILS"] = {};
@@ -488,6 +645,13 @@ async function fetchAllData() {
         STATE.currencies["EUR/ILS"].rate = eur.currentExchangeRate.toFixed(4);
         STATE.currencies["EUR/ILS"].change_pct = parseFloat(eur.currentChange || 0).toFixed(2);
         STATE.currencies["EUR/ILS"].source = "שער יציג";
+      }
+      const gbp = boiRates.find(r => r.key === "GBP");
+      if (gbp) {
+        if (!STATE.currencies["GBP/ILS"]) STATE.currencies["GBP/ILS"] = {};
+        STATE.currencies["GBP/ILS"].rate = gbp.currentExchangeRate.toFixed(4);
+        STATE.currencies["GBP/ILS"].change_pct = parseFloat(gbp.currentChange || 0).toFixed(2);
+        STATE.currencies["GBP/ILS"].source = "שער יציג";
       }
       if (boiOk > 0) { updateTimestamp("currencies"); if (!successCount) successCount++; }
     }

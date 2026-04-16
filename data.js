@@ -39,16 +39,29 @@ const INDICES = [
 
 const INDEX_FIELDS = [
   { key: "price", label: "מחיר", color: false },
-  { key: "ytd", label: "שינוי יומי % (מ-Close אתמול)", color: true },
+  { key: "ytd", label: "שינוי יומי %", color: true, tooltip: "שינוי מ-Close אתמול" },
+  { key: "change_ytd", label: "שינוי מתחילת שנה %", color: true },
+  { key: "pct_from_high_10y", label: "מרחק משיא 10Y %", color: true },
+  { key: "pct_from_low_10y", label: "מרחק משפל 10Y %", color: true },
   { key: "pe_current", label: "P/E נוכחי", color: false },
+  { key: "pe_historical_avg", label: "P/E ממוצע היסטורי", color: false, manual: true },
   { key: "pe_forward", label: "P/E עתידי", color: false, manual: true },
   { key: "shiller_cape", label: "Shiller CAPE", color: false, manual: true },
   { key: "div_yield", label: "תשואת דיב׳ %", color: false, manual: true },
 ];
 
 const SECTORS = [
-  "Technology","Healthcare","Financials","Energy","Consumer Discretionary",
-  "Consumer Staples","Industrials","Materials","Real Estate","Utilities","Communication Services"
+  { name: "Technology", region: "🇺🇸 US" },
+  { name: "Healthcare", region: "🇺🇸 US" },
+  { name: "Financials", region: "🇺🇸 US" },
+  { name: "Energy", region: "🇺🇸 US" },
+  { name: "Consumer Discretionary", region: "🇺🇸 US" },
+  { name: "Consumer Staples", region: "🇺🇸 US" },
+  { name: "Industrials", region: "🇺🇸 US" },
+  { name: "Materials", region: "🇺🇸 US" },
+  { name: "Real Estate", region: "🇺🇸 US" },
+  { name: "Utilities", region: "🇺🇸 US" },
+  { name: "Communication Services", region: "🇺🇸 US" },
 ];
 
 const SECTOR_ETFS = {
@@ -58,11 +71,15 @@ const SECTOR_ETFS = {
 };
 
 const SECTOR_FIELDS = [
-  { key: "ytd", label: "שינוי יומי % (מ-Close אתמול)", color: true },
+  { key: "region", label: "אזור", color: false },
+  { key: "ytd", label: "שינוי יומי %", color: true, tooltip: "שינוי מ-Close אתמול" },
+  { key: "change_ytd", label: "שינוי מתחילת שנה %", color: true },
+  { key: "change_12m", label: "שינוי 12 חודשים %", color: true },
   { key: "pe", label: "P/E", color: false },
   { key: "weight_sp500", label: "משקל S&P500 %", color: false, manual: true },
 ];
 
+// YTD and 12M change will be fetched for commodities
 const COMMODITIES = [
   { sym: "USO", key: "CL", name: "נפט (USO ETF)", unit: "$/מנייה" },
   { sym: "GLD", key: "GC", name: "זהב (GLD ETF)", unit: "$/מנייה" },
@@ -74,12 +91,13 @@ const COMMODITIES = [
 ];
 
 const CURRENCIES = [
-  { sym: "USDILS", yahoo: "USDILS=X", key: "USD/ILS", name: "דולר/שקל" },
-  { sym: "EURUSD", yahoo: "EURUSD=X", key: "EUR/USD", name: "אירו/דולר" },
-  { sym: "USDJPY", yahoo: "USDJPY=X", key: "USD/JPY", name: "דולר/ין" },
-  { sym: "USDCNY", yahoo: "USDCNY=X", key: "USD/CNY", name: "דולר/יואן" },
-  { sym: "GBPUSD", yahoo: "GBPUSD=X", key: "GBP/USD", name: "ליש״ט/דולר" },
-  { sym: "EURILS", yahoo: "EURILS=X", key: "EUR/ILS", name: "אירו/שקל" },
+  { sym: "USDILS", yahoo: "USDILS=X", key: "USD/ILS", name: "דולר/שקל", direct: true },
+  { sym: "EURILS", yahoo: "EURILS=X", key: "EUR/ILS", name: "אירו/שקל", direct: true },
+  { sym: "GBPILS", yahoo: "GBPILS=X", key: "GBP/ILS", name: "ליש״ט/שקל", direct: true },
+  { sym: "JPYILS", yahoo: null, key: "JPY/ILS", name: "ין/שקל (100 ין)", cross: ["USDJPY=X", "USDILS=X"], crossCalc: "ils_div_rate" },
+  { sym: "CNYILS", yahoo: null, key: "CNY/ILS", name: "יואן/שקל", cross: ["USDCNY=X", "USDILS=X"], crossCalc: "ils_div_rate" },
+  { sym: "CHFILS", yahoo: "CHFILS=X", key: "CHF/ILS", name: "פרנק שוויצרי/שקל", direct: true },
+  { sym: "AUDILS", yahoo: null, key: "AUD/ILS", name: "דולר אוסטרלי/שקל", cross: ["AUDUSD=X", "USDILS=X"], crossCalc: "usd_mult" },
 ];
 
 const FEAR_INDICATORS = [
