@@ -906,90 +906,109 @@ function editPortfolioField(idx, field) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// API FETCH — Multi-source with CORS proxy: Stooq (primary) + TD (fallback) + Frankfurter (FX)
+// API FETCH — Multi-source: Yahoo Finance (primary) + TD (fallback) + Frankfurter (FX)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TD_BASE = "https://api.twelvedata.com";
 const FMP_BASE = "https://financialmodelingprep.com/stable";
-const STOOQ_BASE = "https://stooq.com/q/l/";
-// CORS proxy wraps the request (needed because Stooq doesn't allow cross-origin)
-const CORS_PROXY = "https://corsproxy.io/?url=";
 
-async function stooqFetch(url) {
-  // Try direct first (works if Stooq ever adds CORS)
+// Multiple CORS proxies for resilience — if one goes down, try the next
+const CORS_PROXIES = [
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.org/?url=${encodeURIComponent(url)}`,
+];
+let _workingProxy = -1; // cache which proxy works: -1=untested, -2=direct
+
+async function fetchWithTimeout(url, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url);
-    if (resp.ok) return await resp.text();
-  } catch(e) { /* fall through to proxy */ }
-  // Use CORS proxy
-  const proxyUrl = CORS_PROXY + encodeURIComponent(url);
-  const resp = await fetch(proxyUrl);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return await resp.text();
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    return resp;
+  } catch(e) { clearTimeout(timer); throw e; }
 }
 
-async function stooqQuote(stooqSymbol) {
-  const url = `${STOOQ_BASE}?s=${encodeURIComponent(stooqSymbol)}&f=sd2t2ohlcvn&h&e=csv`;
-  const text = await stooqFetch(url);
-  const lines = text.trim().split("\n");
-  if (lines.length < 2) return null;
-  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
-  const values = lines[1].split(",").map(v => v.trim());
-  const row = {};
-  headers.forEach((h, i) => row[h] = values[i]);
-  if (!row.close || row.close === "N/D") return null;
-  const close = parseFloat(row.close);
-  const open = parseFloat(row.open);
-  const change = open ? ((close - open) / open * 100) : 0;
+async function fetchWithProxy(url, timeoutMs = 10000) {
+  // If we already know a working proxy, try it first
+  if (_workingProxy === -2) {
+    try { const r = await fetchWithTimeout(url, timeoutMs); if (r.ok) return r; } catch(e) {}
+    _workingProxy = -1;
+  } else if (_workingProxy >= 0) {
+    try {
+      const r = await fetchWithTimeout(CORS_PROXIES[_workingProxy](url), timeoutMs);
+      if (r.ok) return r;
+    } catch(e) {}
+    _workingProxy = -1;
+  }
+  // Try direct
+  try {
+    const r = await fetchWithTimeout(url, timeoutMs);
+    if (r.ok) { _workingProxy = -2; return r; }
+  } catch(e) {}
+  // Try each proxy
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    try {
+      const r = await fetchWithTimeout(CORS_PROXIES[i](url), timeoutMs);
+      if (r.ok) { _workingProxy = i; return r; }
+    } catch(e) { continue; }
+  }
+  throw new Error("All proxies failed");
+}
+
+// ── Yahoo Finance v8 chart API ──────────────────────────────────────────────
+
+async function yahooQuote(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+  const resp = await fetchWithProxy(url);
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); } catch(e) { return null; }
+  const result = json.chart?.result?.[0];
+  if (!result) return null;
+  const meta = result.meta;
+  const price = meta.regularMarketPrice;
+  if (!price) return null;
+  const prevClose = meta.chartPreviousClose || meta.previousClose || price;
+  const change = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
+  const quote = result.indicators?.quote?.[0];
+  const lastIdx = quote?.close ? quote.close.length - 1 : -1;
   return {
-    symbol: row.symbol,
-    price: close,
-    open: open,
-    high: parseFloat(row.high) || close,
-    low: parseFloat(row.low) || close,
-    volume: parseFloat(row.volume) || 0,
+    symbol: meta.symbol || symbol,
+    price,
+    open: (lastIdx >= 0 && quote.open[lastIdx]) || price,
+    high: (lastIdx >= 0 && quote.high[lastIdx]) || price,
+    low: (lastIdx >= 0 && quote.low[lastIdx]) || price,
+    volume: (lastIdx >= 0 && quote.volume[lastIdx]) || meta.regularMarketVolume || 0,
     change_pct: change,
-    date: row.date,
-    time: row.time,
-    name: row.name || ""
+    name: meta.shortName || meta.longName || "",
+    date: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString().slice(0, 10) : ""
   };
 }
 
-async function stooqBatch(stooqSymbols) {
-  const symbols = Array.isArray(stooqSymbols) ? stooqSymbols.join(",") : stooqSymbols;
-  const url = `${STOOQ_BASE}?s=${encodeURIComponent(symbols)}&f=sd2t2ohlcvn&h&e=csv`;
-  const text = await stooqFetch(url);
-  const lines = text.trim().split("\n");
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
+async function yahooBatch(symbols, concurrency = 5) {
   const results = [];
-  for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(",").map(v => v.trim());
-    const row = {};
-    headers.forEach((h, j) => row[h] = values[j]);
-    if (!row.close || row.close === "N/D") continue;
-    const close = parseFloat(row.close);
-    const open = parseFloat(row.open);
-    const change = open ? ((close - open) / open * 100) : 0;
-    results.push({
-      symbol: row.symbol,
-      price: close,
-      change_pct: change,
-      high: parseFloat(row.high) || close,
-      low: parseFloat(row.low) || close,
-      volume: parseFloat(row.volume) || 0,
-      date: row.date,
-      name: row.name || ""
-    });
+  for (let i = 0; i < symbols.length; i += concurrency) {
+    const batch = symbols.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async sym => {
+        try { return await yahooQuote(sym); }
+        catch(e) { console.warn(`Yahoo ${sym}:`, e.message); return null; }
+      })
+    );
+    results.push(...batchResults.filter(Boolean));
   }
   return results;
 }
+
+// ── Twelve Data (fallback, requires API key) ────────────────────────────────
 
 async function tdQuote(symbols) {
   if (!STATE.tdApiKey) throw new Error("No TD key");
   const symbolStr = Array.isArray(symbols) ? symbols.join(",") : symbols;
   const url = `${TD_BASE}/quote?symbol=${encodeURIComponent(symbolStr)}&apikey=${STATE.tdApiKey}`;
-  const resp = await fetch(url);
+  const resp = await fetchWithTimeout(url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const data = await resp.json();
   if (data.code && data.code >= 400) throw new Error(data.message || `Error ${data.code}`);
@@ -997,40 +1016,47 @@ async function tdQuote(symbols) {
   return { [symbolStr]: data };
 }
 
+// ── FMP (sectors, requires API key) ─────────────────────────────────────────
+
 async function fmpFetch(path) {
   if (!STATE.apiKey) throw new Error("FMP key not configured");
   const sep = path.includes("?") ? "&" : "?";
   const url = `${FMP_BASE}/${path}${sep}apikey=${STATE.apiKey}`;
-  const resp = await fetch(url);
+  const resp = await fetchWithTimeout(url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
 }
 
+// ── Test Connection ─────────────────────────────────────────────────────────
+
 async function testApi() {
-  showStatus("בודק חיבור ל-Stooq דרך proxy...", "success");
+  showStatus("בודק חיבור ל-Yahoo Finance...", "success");
   try {
-    const q = await stooqQuote("aapl.us");
+    const q = await yahooQuote("AAPL");
     if (q && q.price) {
       const sign = q.change_pct >= 0 ? "+" : "";
-      showStatus(`✓ Stooq עובד! AAPL = $${q.price.toFixed(2)} (${sign}${q.change_pct.toFixed(2)}%)`, "success");
+      const proxy = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "unknown";
+      showStatus(`✓ Yahoo Finance עובד! AAPL = $${q.price.toFixed(2)} (${sign}${q.change_pct.toFixed(2)}%) [${proxy}]`, "success");
       return;
     }
-    showStatus("⚠ Stooq החזיר תשובה ריקה", "error");
+    showStatus("⚠ Yahoo Finance החזיר תשובה ריקה", "error");
   } catch(e) {
-    console.warn("Stooq failed:", e.message);
+    console.warn("Yahoo failed:", e.message);
     if (STATE.tdApiKey) {
       try {
         const data = await tdQuote("AAPL");
         const q = data.AAPL || data;
         if (q && q.close) {
-          showStatus(`✓ Twelve Data עובד! AAPL = $${parseFloat(q.close).toFixed(2)} (Stooq לא זמין)`, "success");
+          showStatus(`✓ Twelve Data עובד! AAPL = $${parseFloat(q.close).toFixed(2)} (Yahoo לא זמין)`, "success");
           return;
         }
-      } catch(e2) { showStatus(`✕ שני המקורות נכשלו. Stooq: ${e.message}. TD: ${e2.message}`, "error"); return; }
+      } catch(e2) { showStatus(`✕ שני המקורות נכשלו. Yahoo: ${e.message}. TD: ${e2.message}`, "error"); return; }
     }
-    showStatus(`✕ Stooq נכשל: ${e.message}. הוסף Twelve Data key כגיבוי.`, "error");
+    showStatus(`✕ Yahoo Finance נכשל: ${e.message}. הוסף Twelve Data key כגיבוי.`, "error");
   }
 }
+
+// ── Fetch All Data ──────────────────────────────────────────────────────────
 
 async function fetchAllData() {
   document.getElementById("loadingOverlay").classList.remove("hidden");
@@ -1038,31 +1064,32 @@ async function fetchAllData() {
   let successCount = 0;
   const errors = [];
 
-  // Build all stooq symbols
-  const stooqSymbols = [];
-  const stooqMap = {};
-  INDICES.forEach(i => { stooqSymbols.push(i.stooq); stooqMap[i.stooq.toUpperCase()] = { cat: "indices", key: i.key }; });
-  COMMODITIES.forEach(c => { stooqSymbols.push(c.stooq); stooqMap[c.stooq.toUpperCase()] = { cat: "commodities", key: c.key }; });
-  stooqSymbols.push("^vix"); stooqMap["^VIX"] = { cat: "fear", key: "vix" };
-  stooqSymbols.push("^tnx"); stooqMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
+  // Build Yahoo symbol list
+  const yahooSymbols = [];
+  const yahooMap = {};
+  INDICES.forEach(i => { yahooSymbols.push(i.sym); yahooMap[i.sym] = { cat: "indices", key: i.key }; });
+  COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
+  yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
+  yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
   STATE.portfolio.forEach(s => {
-    const stooqSym = s.symbol.toLowerCase() + ".us";
-    if (!stooqMap[stooqSym.toUpperCase()]) {
-      stooqSymbols.push(stooqSym);
-      stooqMap[stooqSym.toUpperCase()] = { cat: "portfolio", key: s.symbol };
+    const sym = s.symbol.toUpperCase();
+    if (!yahooMap[sym]) {
+      yahooSymbols.push(sym);
+      yahooMap[sym] = { cat: "portfolio", key: s.symbol };
     }
   });
 
-  // 1. Try STOOQ first (via CORS proxy)
-  let stooqWorked = false;
+  // 1. Try Yahoo Finance (primary)
+  let yahooWorked = false;
   try {
-    showStatus(`משוך ${stooqSymbols.length} סימולים מ-Stooq...`, "success");
-    const results = await stooqBatch(stooqSymbols);
+    showStatus(`שולף ${yahooSymbols.length} סימולים מ-Yahoo Finance...`, "success");
+    const results = await yahooBatch(yahooSymbols);
     if (results.length > 0) {
-      stooqWorked = true;
+      yahooWorked = true;
       const okByCategory = { indices: 0, commodities: 0, fear: 0, portfolio: 0 };
       results.forEach(q => {
-        const meta = stooqMap[q.symbol?.toUpperCase()];
+        const sym = q.symbol?.toUpperCase();
+        const meta = yahooMap[sym];
         if (!meta) return;
         const price = parseFloat(q.price);
         const change = parseFloat(q.change_pct).toFixed(2);
@@ -1100,13 +1127,13 @@ async function fetchAllData() {
       if (STATE.portfolio.length > 0 && okByCategory.portfolio < STATE.portfolio.length) errors.push(`תיק ${okByCategory.portfolio}/${STATE.portfolio.length}`);
     }
   } catch(e) {
-    console.warn("Stooq fetch failed:", e);
-    errors.push("Stooq: " + e.message);
+    console.warn("Yahoo fetch failed:", e);
+    errors.push("Yahoo: " + e.message);
   }
 
-  // 2. If Stooq failed and Twelve Data key exists — use TD as fallback
-  if (!stooqWorked && STATE.tdApiKey) {
-    showStatus("Stooq נכשל, עובר ל-Twelve Data...", "success");
+  // 2. If Yahoo failed and Twelve Data key exists — use TD as fallback
+  if (!yahooWorked && STATE.tdApiKey) {
+    showStatus("Yahoo נכשל, עובר ל-Twelve Data...", "success");
     try {
       const tdSymbols = [];
       const tdMap = {};
@@ -1163,7 +1190,7 @@ async function fetchAllData() {
     for (const base of baseSet) {
       try {
         const targets = CURRENCIES.filter(c => c.key.startsWith(base + "/")).map(c => c.key.split("/")[1]).join(",");
-        const resp = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${targets}`);
+        const resp = await fetchWithTimeout(`https://api.frankfurter.app/latest?from=${base}&to=${targets}`);
         if (!resp.ok) continue;
         const d = await resp.json();
         if (d.rates) {
@@ -1208,14 +1235,15 @@ async function fetchAllData() {
   document.getElementById("loadingOverlay").classList.add("hidden");
   document.getElementById("fetchBtn").disabled = false;
 
+  const proxyLabel = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "";
   if (successCount === 0) {
     showStatus(`✕ נכשל: ${errors.join(" | ")}`, "error");
   } else if (errors.length === 0) {
-    showStatus(`✓ ${successCount} קטגוריות עודכנו בהצלחה`, "success");
+    showStatus(`✓ ${successCount} קטגוריות עודכנו בהצלחה ${proxyLabel ? `[${proxyLabel}]` : ""}`, "success");
   } else {
     showStatus(`✓ עודכנו ${successCount}. חסרים: ${errors.join(", ")}`, "success");
   }
-  console.log("Fetch result:", { success: successCount, errors, stooqWorked });
+  console.log("Fetch result:", { success: successCount, errors, yahooWorked, proxy: _workingProxy });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1233,11 +1261,11 @@ async function scanStock() {
   let q = null;
   let source = "";
 
-  // Try Stooq first
+  // Try Yahoo Finance first
   try {
-    q = await stooqQuote(sym.toLowerCase() + ".us");
-    if (q && q.price) source = "Stooq";
-  } catch(e) { console.warn("Stooq scanner:", e); }
+    q = await yahooQuote(sym);
+    if (q && q.price) source = "Yahoo Finance";
+  } catch(e) { console.warn("Yahoo scanner:", e); }
 
   // Fallback to Twelve Data
   if (!q && STATE.tdApiKey) {
@@ -1291,7 +1319,6 @@ async function scanStock() {
         <button class="btn btn-success btn-small" onclick="addFromScanner('${sym}', '${(q.name || "").replace(/'/g, "")}')">+ הוסף לתיק</button>
         <a href="https://finance.yahoo.com/quote/${sym}" target="_blank" class="btn btn-outline">📊 Yahoo Finance</a>
         <a href="https://www.google.com/finance/quote/${sym}:NASDAQ" target="_blank" class="btn btn-outline">🔎 Google Finance</a>
-        <a href="https://stooq.com/q/?s=${sym.toLowerCase()}.us" target="_blank" class="btn btn-outline">📈 Stooq</a>
         <a href="https://seekingalpha.com/symbol/${sym}" target="_blank" class="btn btn-outline">🔬 Seeking Alpha</a>
       </div>
     </div>
