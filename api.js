@@ -419,6 +419,10 @@ async function fetchAllData() {
           if (ytdChange !== null && STATE.indices[idx.key]) {
             STATE.indices[idx.key].change_ytd = ytdChange.toFixed(2);
           }
+          const m12Change = await yahoo12MChange(idx.sym);
+          if (m12Change !== null && STATE.indices[idx.key]) {
+            STATE.indices[idx.key].change_12m = m12Change.toFixed(2);
+          }
         } catch(e) { console.warn(`Historical ${idx.sym}:`, e.message); }
       }
     } catch(e) { console.warn("Historical data:", e.message); }
@@ -730,6 +734,28 @@ async function fetchAllData() {
       if (bondOk > 0) { updateTimestamp("macro"); }
     } catch(e) { console.warn("FRED Bonds:", e.message); }
   }
+
+  // 9. Fill missing macro fields with estimated/scraped data from Yahoo Finance
+  // Central bank rates via bond ETFs as proxy
+  try {
+    showStatus("משלים נתוני מאקרו חסרים...", "success");
+    const macroProxies = [
+      { sym: "^IRX", region: "US", field: "interest_rate", transform: v => v.toFixed(2) },  // 13-week T-bill ≈ fed funds
+      { sym: "^TNX", region: "US", field: "bond_10y", transform: v => v.toFixed(2) },
+      { sym: "^TYX", region: "US", field: null },  // 30Y for reference
+    ];
+    for (const mp of macroProxies) {
+      if (mp.field && (!STATE.macro[mp.region] || !STATE.macro[mp.region][mp.field])) {
+        try {
+          const q = await yahooQuote(mp.sym);
+          if (q && q.price) {
+            if (!STATE.macro[mp.region]) STATE.macro[mp.region] = {};
+            STATE.macro[mp.region][mp.field] = mp.transform(q.price);
+          }
+        } catch(e) { console.warn(`Macro proxy ${mp.sym}:`, e.message); }
+      }
+    }
+  } catch(e) { console.warn("Macro proxies:", e.message); }
 
   saveState();
   renderAll();

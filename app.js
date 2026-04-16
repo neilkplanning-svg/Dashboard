@@ -11,6 +11,7 @@ let STATE = {
   fear: {},
   portfolio: [],
   timestamps: {},
+  refPoints: {},
   apiKey: "",
   tdApiKey: "",
   fredApiKey: "",
@@ -178,6 +179,43 @@ function commitEdit(input, section, rowKey, fieldKey) {
 function cancelEdit(section) { renderSection(section); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// REFERENCE POINTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function setRefPoint(category, key) {
+  const data = STATE[category]?.[key];
+  if (!data) return;
+  const price = parseFloat(data.price || data.rate);
+  if (!price || isNaN(price)) { showStatus("אין מחיר נוכחי לשמירה", "error"); return; }
+  if (!STATE.refPoints[category]) STATE.refPoints[category] = {};
+  STATE.refPoints[category][key] = {
+    price: price,
+    date: new Date().toISOString(),
+  };
+  saveState();
+  renderSection(category === "indices" ? "indices" : "commodities");
+  showStatus(`נקודת רפרנס נשמרה: ${key} = ${price}`, "success");
+}
+
+function clearRefPoint(category, key) {
+  if (STATE.refPoints[category]) {
+    delete STATE.refPoints[category][key];
+    saveState();
+    renderSection(category === "indices" ? "indices" : "commodities");
+  }
+}
+
+function getRefChange(category, key) {
+  const ref = STATE.refPoints?.[category]?.[key];
+  if (!ref) return null;
+  const data = STATE[category]?.[key];
+  const currentPrice = parseFloat(data?.price);
+  if (!currentPrice || isNaN(currentPrice)) return null;
+  const change = ((currentPrice - ref.price) / ref.price * 100);
+  return { change: change.toFixed(2), date: ref.date, refPrice: ref.price };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // RENDER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -199,13 +237,38 @@ function renderMacro() {
 
 function renderIndices() {
   let html = `<thead><tr><th>מדד</th><th>אזור</th>`;
-  INDEX_FIELDS.forEach(f => html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`);
+  INDEX_FIELDS.forEach(f => {
+    if (f.ref) {
+      html += `<th>${f.label}</th>`;
+    } else {
+      html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`;
+    }
+  });
+  html += `<th>📌 רפרנס</th>`;
   html += `</tr></thead><tbody>`;
   INDICES.forEach(idx => {
     html += `<tr><td class="label">${idx.name}</td><td>${idx.region}</td>`;
     INDEX_FIELDS.forEach(f => {
-      html += `<td>${makeCell("indices", idx.key, f.key, STATE.indices[idx.key]?.[f.key], f.color)}</td>`;
+      if (f.ref) {
+        const ref = getRefChange("indices", idx.key);
+        if (ref) {
+          const cls = colorClass(ref.change);
+          const dt = new Date(ref.date);
+          const dateStr = dt.toLocaleDateString("he-IL");
+          html += `<td><span class="${cls}">${fmtNum(ref.change)}%</span><span class="ref-date">${dateStr} (${fmtNum(ref.refPrice)})</span></td>`;
+        } else {
+          html += `<td>—</td>`;
+        }
+      } else {
+        html += `<td>${makeCell("indices", idx.key, f.key, STATE.indices[idx.key]?.[f.key], f.color)}</td>`;
+      }
     });
+    // Reference point button
+    const hasRef = STATE.refPoints?.indices?.[idx.key];
+    html += `<td>`;
+    html += `<button class="ref-btn${hasRef ? ' active' : ''}" onclick="setRefPoint('indices','${idx.key}')" title="סמן מחיר נוכחי כרפרנס">📌</button>`;
+    if (hasRef) html += ` <button class="ref-btn" onclick="clearRefPoint('indices','${idx.key}')" title="נקה רפרנס">✕</button>`;
+    html += `</td>`;
     html += `</tr>`;
   });
   html += `</tbody>`;
@@ -235,13 +298,29 @@ function renderSectors() {
 }
 
 function renderCommodities() {
-  let html = `<thead><tr><th>סחורה</th><th>מחיר</th><th>שינוי יומי %</th><th>שינוי מתחילת שנה %</th><th>שינוי 12 חודשים %</th><th>יחידה</th></tr></thead><tbody>`;
+  let html = `<thead><tr><th>סחורה</th><th>מחיר</th><th>שינוי יומי %</th><th>שינוי מתחילת שנה %</th><th>שינוי 12 חודשים %</th><th>שינוי מרפרנס %</th><th>📌 רפרנס</th><th>יחידה</th></tr></thead><tbody>`;
   COMMODITIES.forEach(c => {
     html += `<tr><td class="label">${c.name}</td>`;
     html += `<td>${makeCell("commodities", c.key, "price", STATE.commodities[c.key]?.price, false)}</td>`;
     html += `<td>${makeCell("commodities", c.key, "change_pct", STATE.commodities[c.key]?.change_pct, true)}</td>`;
     html += `<td>${makeCell("commodities", c.key, "change_ytd", STATE.commodities[c.key]?.change_ytd, true)}</td>`;
     html += `<td>${makeCell("commodities", c.key, "change_12m", STATE.commodities[c.key]?.change_12m, true)}</td>`;
+    // Reference change
+    const ref = getRefChange("commodities", c.key);
+    if (ref) {
+      const cls = colorClass(ref.change);
+      const dt = new Date(ref.date);
+      const dateStr = dt.toLocaleDateString("he-IL");
+      html += `<td><span class="${cls}">${fmtNum(ref.change)}%</span><span class="ref-date">${dateStr} (${fmtNum(ref.refPrice)})</span></td>`;
+    } else {
+      html += `<td>—</td>`;
+    }
+    // Reference button
+    const hasRef = STATE.refPoints?.commodities?.[c.key];
+    html += `<td>`;
+    html += `<button class="ref-btn${hasRef ? ' active' : ''}" onclick="setRefPoint('commodities','${c.key}')" title="סמן מחיר נוכחי כרפרנס">📌</button>`;
+    if (hasRef) html += ` <button class="ref-btn" onclick="clearRefPoint('commodities','${c.key}')" title="נקה רפרנס">✕</button>`;
+    html += `</td>`;
     html += `<td>${c.unit}</td></tr>`;
   });
   html += `</tbody>`;
