@@ -9,6 +9,21 @@
 </head>
 <body>
 
+<!-- AUTH DIALOG -->
+<div id="authOverlay" class="loading-overlay" style="z-index:1001">
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:16px;padding:32px;max-width:400px;text-align:center">
+    <div class="nk-logo-text" style="margin:0 auto 16px">NK</div>
+    <h2 style="color:var(--text);margin-bottom:8px">דשבורד השקעות</h2>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:20px">Neil Kappel · Financial Planning & Strategy</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <input id="authPass" type="password" class="form-input" placeholder="הזן סיסמה..." style="text-align:center;width:100%" onkeydown="if(event.key==='Enter')doAuth()" />
+      <button class="btn btn-primary" onclick="doAuth()" style="width:100%">🔐 כניסה כניל</button>
+      <button class="btn btn-outline" onclick="guestAuth()" style="width:100%">👤 כניסה כאורח</button>
+      <p style="color:var(--text-ghost);font-size:11px;margin-top:4px">אורח — מקורות חינמיים בלבד. ניל — כל מקורות ה-API</p>
+    </div>
+  </div>
+</div>
+
 <!-- LOADING OVERLAY -->
 <div id="loadingOverlay" class="loading-overlay hidden">
   <div class="spinner"></div>
@@ -17,6 +32,26 @@
 
 <!-- STATUS BAR -->
 <div id="statusBar" class="status-bar hidden"></div>
+
+<!-- CHART MODAL -->
+<div id="chartModal" class="loading-overlay hidden" onclick="closeChart(event)" style="cursor:pointer">
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:900px;width:95%;cursor:default" onclick="event.stopPropagation()">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 id="chartTitle" style="color:var(--accent)"></h3>
+      <button class="btn-icon" onclick="document.getElementById('chartModal').classList.add('hidden')" style="font-size:20px">✕</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <button class="chip chart-range active" data-range="1y" onclick="loadChart(null,'1y',this)">שנה</button>
+      <button class="chip chart-range" data-range="2y" onclick="loadChart(null,'2y',this)">שנתיים</button>
+      <button class="chip chart-range" data-range="5y" onclick="loadChart(null,'5y',this)">5 שנים</button>
+      <button class="chip chart-range" data-range="10y" onclick="loadChart(null,'10y',this)">10 שנים</button>
+    </div>
+    <div id="chartContainer" style="height:400px;background:var(--bg-elevated);border-radius:8px;overflow:hidden;position:relative">
+      <canvas id="chartCanvas" style="width:100%;height:100%"></canvas>
+    </div>
+    <div id="chartFunds" style="margin-top:16px"></div>
+  </div>
+</div>
 
 <!-- HEADER -->
 <header class="header">
@@ -31,29 +66,35 @@
     <div class="header-actions">
       <button class="btn-icon" onclick="toggleDataBar()" title="ייצוא/ייבוא נתונים">💾</button>
       <button class="btn-icon" onclick="toggleApiBar()" title="הגדרות API">⚙️</button>
+      <span id="authLabel" style="font-size:11px;color:var(--text-faint)"></span>
       <button class="btn btn-primary" onclick="fetchAllData()" id="fetchBtn">🔄 משוך נתונים</button>
     </div>
   </div>
   <div id="apiBar" class="api-bar">
     <div style="width:100%;display:flex;flex-direction:column;gap:8px">
       <div style="padding:8px 12px;background:rgba(34,197,94,0.1);border-radius:6px;color:var(--green);font-size:12px">
-        ✓ כברירת מחדל, הדשבורד משתמש ב-<b>Yahoo Finance</b> + <b>בנק ישראל</b> + <b>World Bank</b> (חינמי, בלי API key). המפתחות למטה הם למקורות נוספים.
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="color:var(--text-faint);font-size:12px;min-width:150px">Twelve Data (אופציונלי):</span>
-        <input id="tdApiKeyInput" placeholder="אופציונלי — כ-fallback" style="flex:1;min-width:200px;font-size:12px" />
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="color:var(--text-faint);font-size:12px;min-width:150px">FMP (לסקטורים):</span>
-        <input id="apiKeyInput" placeholder="אופציונלי — רק לנתוני סקטורים" style="flex:1;min-width:200px;font-size:12px" />
+        ✓ מקורות חינמיים: Yahoo Finance + בנק ישראל + World Bank + Stock Analysis + multpl.com + Trading Economics
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="color:var(--text-faint);font-size:12px;min-width:150px">FRED (מאקרו + ריבית + אג״ח):</span>
-        <input id="fredApiKeyInput" placeholder="אופציונלי — ריבית, אינפלציה, אבטלה, תשואת אג״ח 10Y · fred.stlouisfed.org" style="flex:1;min-width:200px;font-size:12px" />
+        <input id="fredApiKeyInput" placeholder="מפתח חינמי · fred.stlouisfed.org" style="flex:1;min-width:200px;font-size:12px" />
+        <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" style="color:var(--accent);font-size:11px;white-space:nowrap">הרשמה ←</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="color:var(--text-faint);font-size:12px;min-width:150px">Twelve Data (גיבוי):</span>
+        <input id="tdApiKeyInput" placeholder="אופציונלי" style="flex:1;min-width:200px;font-size:12px" />
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="color:var(--text-faint);font-size:12px;min-width:150px">FMP (סקטורים):</span>
+        <input id="apiKeyInput" placeholder="אופציונלי" style="flex:1;min-width:200px;font-size:12px" />
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-success btn-small" onclick="saveApiKey()">שמור</button>
         <button class="btn btn-outline" onclick="testApi()">🧪 בדוק חיבור</button>
+      </div>
+      <div style="margin-top:8px;padding:8px 12px;background:var(--bg-deep);border-radius:6px">
+        <span style="color:var(--text-faint);font-size:11px;font-weight:700">תיעדוף מקורות (מהאמין ביותר):</span>
+        <div id="apiSourcesList" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px"></div>
       </div>
     </div>
   </div>
@@ -87,7 +128,7 @@
       <h2 class="section-title">🌍 נתוני מאקרו גלובליים</h2>
       <div class="timestamp" id="ts-macro">עדכון אחרון: —</div>
     </div>
-    <div class="hint">נתונים מ-World Bank (חינמי) + FRED (עם מפתח). ריבית ואג״ח 10Y דורשים מפתח FRED חינמי · לחץ על כל תא לעריכה</div>
+    <div class="hint">נתונים מ-World Bank + FRED + Trading Economics · לחץ על כל תא לעריכה</div>
     <div class="table-wrap"><table id="macroTable"></table></div>
   </div>
 
@@ -97,7 +138,7 @@
       <h2 class="section-title">📊 מדדים מובילים — מכפילים והערכות שווי</h2>
       <div class="timestamp" id="ts-indices">עדכון אחרון: —</div>
     </div>
-    <div class="hint">🔒 = שדה ידני · נתונים נוספים ב: multpl.com (Shiller CAPE), wsj.com/market-data</div>
+    <div class="hint">לחץ על שם מדד לגרף + קרנות מחקות · 🔒 = שדה ידני · P/E מ-stockanalysis.com</div>
     <div class="table-wrap"><table id="indicesTable"></table></div>
   </div>
 
@@ -107,7 +148,7 @@
       <h2 class="section-title">🏭 ביצועי סקטורים</h2>
       <div class="timestamp" id="ts-sectors">עדכון אחרון: —</div>
     </div>
-    <div class="hint">🔒 = שדה ידני · ביצועי סקטורים נמשכים אוטומטית מ-Yahoo Finance (ETFs)</div>
+    <div class="hint">ביצועי סקטורים נמשכים אוטומטית מ-Yahoo Finance (ETFs) · 🔒 = שדה ידני</div>
     <div class="table-wrap"><table id="sectorsTable"></table></div>
   </div>
 
@@ -117,20 +158,23 @@
       <h2 class="section-title">🛢️ סחורות</h2>
       <div class="timestamp" id="ts-commodities">עדכון אחרון: —</div>
     </div>
+    <div class="hint">לחץ על שם סחורה לגרף היסטורי</div>
     <div class="table-wrap"><table id="commoditiesTable"></table></div>
     <div class="section-header" style="margin-top:32px">
-      <h2 class="section-title">💱 מטבעות</h2>
+      <h2 class="section-title">💱 מטבעות מול ₪</h2>
       <div class="timestamp" id="ts-currencies">עדכון אחרון: —</div>
     </div>
+    <div class="hint">לחץ על שם מטבע לגרף היסטורי</div>
     <div class="table-wrap"><table id="currenciesTable"></table></div>
   </div>
 
   <!-- FEAR -->
   <div id="panel-fear" class="tab-panel">
     <div class="section-header">
-      <h2 class="section-title">😰 מדדי פחד וסנטימנט</h2>
+      <h2 class="section-title">😰 מדדי פחד וסנטימנט — Buffett Dashboard</h2>
       <div class="timestamp" id="ts-fear">עדכון אחרון: —</div>
     </div>
+    <div class="hint">מדדים שוורן באפט עוקב אחריהם: VIX, Buffett Indicator, תשואות אג״ח, מינוף שוק, Fear & Greed</div>
     <div class="fear-grid" id="fearGrid"></div>
   </div>
 
@@ -138,26 +182,33 @@
   <div id="panel-scanner" class="tab-panel">
     <div class="section-header">
       <h2 class="section-title">🔎 סקרינר מניות</h2>
-      <div class="timestamp">חיפוש מנייה לפי סימול</div>
+      <div class="timestamp">חיפוש מנייה לפי סימול — US + ישראל</div>
     </div>
-    <div class="hint">הכנס סימול של מנייה (AAPL, MSFT, TSLA, NVDA וכו') וקבל מידע חי מ-Yahoo Finance</div>
+    <div class="hint">הכנס סימול US (AAPL, TSLA) או ישראלי (TEVA, NICE, ICL) · נתונים מ-Yahoo Finance + Stock Analysis</div>
     <div class="add-form">
       <div class="form-row">
-        <input class="form-input" id="scannerSymbol" placeholder="סימול המנייה (AAPL)" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter') scanStock()" />
+        <input class="form-input" id="scannerSymbol" placeholder="סימול (AAPL / TEVA.TA)" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter') scanStock()" />
         <button class="btn btn-primary" onclick="scanStock()">🔎 חפש</button>
       </div>
       <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
-        <span style="color:var(--text-faint);font-size:12px">מניות פופולריות:</span>
+        <span style="color:var(--text-faint);font-size:12px">US:</span>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='AAPL';scanStock()">AAPL</button>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='MSFT';scanStock()">MSFT</button>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='GOOGL';scanStock()">GOOGL</button>
-        <button class="chip" onclick="document.getElementById('scannerSymbol').value='AMZN';scanStock()">AMZN</button>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='NVDA';scanStock()">NVDA</button>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='TSLA';scanStock()">TSLA</button>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='META';scanStock()">META</button>
         <button class="chip" onclick="document.getElementById('scannerSymbol').value='BRK-B';scanStock()">BRK-B</button>
-        <button class="chip" onclick="document.getElementById('scannerSymbol').value='JPM';scanStock()">JPM</button>
-        <button class="chip" onclick="document.getElementById('scannerSymbol').value='V';scanStock()">V</button>
+      </div>
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+        <span style="color:var(--text-faint);font-size:12px">ישראל:</span>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='TEVA';scanStock()">TEVA</button>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='NICE';scanStock()">NICE</button>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='ICL';scanStock()">ICL</button>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='LUMI.TA';scanStock()">לאומי</button>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='POLI.TA';scanStock()">הפועלים</button>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='BEZQ.TA';scanStock()">בזק</button>
+        <button class="chip" onclick="document.getElementById('scannerSymbol').value='TASE.TA';scanStock()">הבורסה</button>
       </div>
     </div>
     <div id="scannerResult"></div>

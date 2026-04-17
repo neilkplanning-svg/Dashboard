@@ -198,7 +198,7 @@ async function fetchWorldBank() {
   const results = {};
   for (const [field, indicator] of Object.entries(WB_INDICATORS)) {
     try {
-      const url = `https://api.worldbank.org/v2/country/${WB_COUNTRIES}/indicator/${indicator}?format=json&per_page=60&date=2020:2026`;
+      const url = `https://api.worldbank.org/v2/country/${WB_COUNTRIES}/indicator/${indicator}?format=json&per_page=100&date=2018:2026`;
       const resp = await fetchWithTimeout(url);
       if (!resp.ok) continue;
       const json = await resp.json();
@@ -214,7 +214,7 @@ async function fetchWorldBank() {
         }
       });
       // Map to our region codes
-      const codeMap = { USA: "US", EUU: "EU", JPN: "JP", CHN: "CN", IND: "IN", ISR: "IL" };
+      const codeMap = WB_COUNTRY_MAP;
       Object.entries(byCountry).forEach(([iso3, val]) => {
         const region = codeMap[iso3];
         if (!region) return;
@@ -317,6 +317,8 @@ async function fetchStockDetails(symbol) {
       eps: d.eps ? parseFloat(d.eps) : null,
       marketCap: d.marketCap || null,
       beta: d.beta ? parseFloat(d.beta) : null,
+      pb: d.pb ? parseFloat(d.pb) : (d.priceToBook ? parseFloat(d.priceToBook) : null),
+      debtEquity: d.debtEquity ? parseFloat(d.debtEquity) : (d.debtToEquity ? parseFloat(d.debtToEquity) : null),
       divYield: d.dividendYield || null,
       revenue: d.revenue || null,
       sharesOut: d.sharesOutstanding || d.shares || null,
@@ -488,6 +490,7 @@ async function fetchAllData() {
   COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
   yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
   yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
+  yahooSymbols.push("DX-Y.NYB"); yahooMap["DX-Y.NYB"] = { cat: "fear", key: "us_dollar_index" };
   STATE.portfolio.forEach(s => {
     const sym = s.symbol.toUpperCase();
     if (!yahooMap[sym]) {
@@ -845,11 +848,17 @@ async function fetchAllData() {
         ["US_interest", "US", "interest_rate"],
         ["US_unemployment", "US", "unemployment"],
         ["IL_interest", "IL", "interest_rate"],
-        ["EU_interest", "EU", "interest_rate"],
-        ["EU_unemployment", "EU", "unemployment"],
+        ["GB_interest", "GB", "interest_rate"],
+        ["GB_unemployment", "GB", "unemployment"],
+        ["DE_unemployment", "DE", "unemployment"],
+        ["FR_unemployment", "FR", "unemployment"],
         ["JP_interest", "JP", "interest_rate"],
         ["JP_unemployment", "JP", "unemployment"],
         ["CN_interest", "CN", "interest_rate"],
+        ["BR_interest", "BR", "interest_rate"],
+        ["KR_interest", "KR", "interest_rate"],
+        ["MX_interest", "MX", "interest_rate"],
+        ["TR_interest", "TR", "interest_rate"],
       ];
       mapping.forEach(([fredKey, region, field]) => {
         if (fred[fredKey]) {
@@ -863,9 +872,15 @@ async function fetchAllData() {
       const inflationMapping = [
         ["US_inflation", "US"],
         ["IL_inflation", "IL"],
-        ["EU_inflation", "EU"],
+        ["GB_inflation", "GB"],
+        ["DE_inflation", "DE"],
+        ["FR_inflation", "FR"],
         ["JP_inflation", "JP"],
         ["CN_inflation", "CN"],
+        ["BR_inflation", "BR"],
+        ["KR_inflation", "KR"],
+        ["MX_inflation", "MX"],
+        ["TR_inflation", "TR"],
       ];
       inflationMapping.forEach(([fredKey, region]) => {
         if (fred[fredKey]) {
@@ -938,7 +953,7 @@ async function fetchAllData() {
   // 11. Fetch P/E for index ETFs via stockanalysis.com JSON API
   try {
     showStatus("שולף מכפילים למדדים מ-Stock Analysis...", "success");
-    const etfPESymbols = ["SPY", "QQQ", "DIA", "IWM", "VGK", "EWJ", "FXI", "INDA", "EIS", "EEM"];
+    const etfPESymbols = INDICES.filter(i => i.sa && i.saType === "e").map(i => i.sym);
     for (const sym of etfPESymbols) {
       try {
         const metrics = await fetchETFMetrics(sym);
@@ -1090,6 +1105,8 @@ async function scanStock() {
       <div class="scanner-grid">
         <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${pe ? pe.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${fpe ? fpe.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${merged.pb ? merged.pb.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${merged.debtEquity ? merged.debtEquity.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? "$" + merged.eps.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${merged.beta?.toFixed(2) || "—"}</span></div>
@@ -1154,8 +1171,15 @@ async function scanStock() {
         <button class="btn btn-success btn-small" onclick="addFromScanner('${sym}', '${(q.name || "").replace(/'/g, "")}')">+ הוסף לתיק</button>
         <a href="https://finance.yahoo.com/quote/${sym}" target="_blank" class="btn btn-outline">📊 Yahoo Finance</a>
         <a href="https://stockanalysis.com/stocks/${sym.toLowerCase()}/" target="_blank" class="btn btn-outline">📈 Stock Analysis</a>
-        <a href="https://www.google.com/finance/quote/${sym}:NASDAQ" target="_blank" class="btn btn-outline">🔎 Google Finance</a>
+        <a href="https://finviz.com/quote.ashx?t=${sym}" target="_blank" class="btn btn-outline">📉 Finviz</a>
         <a href="https://seekingalpha.com/symbol/${sym}" target="_blank" class="btn btn-outline">🔬 Seeking Alpha</a>
+        ${sym.includes('.TA') ? `
+        <a href="https://www.bizportal.co.il/capitalmarket/quote/generalview/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🇮🇱 Bizportal</a>
+        <a href="https://www.tase.co.il/he/market_data/security/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🏛 הבורסה</a>
+        <a href="https://maya.tase.co.il/company/${sym.replace('.TA','')}?view=reports" target="_blank" class="btn btn-outline">📄 דו״חות (מאי״ה)</a>
+        ` : `
+        <a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${sym}&type=10-K&dateb=&owner=include&count=10" target="_blank" class="btn btn-outline">📄 SEC EDGAR</a>
+        `}
       </div>
     </div>
   `;
