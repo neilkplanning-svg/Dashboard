@@ -15,7 +15,185 @@ let STATE = {
   apiKey: "",
   tdApiKey: "",
   fredApiKey: "",
+  authMode: "", // "neil" or "guest"
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function doAuth() {
+  const pass = document.getElementById("authPass").value;
+  if (pass === NK_PASS) {
+    STATE.authMode = "neil";
+    STATE.tdApiKey = NK_KEYS.td;
+    STATE.apiKey = NK_KEYS.fmp;
+    STATE.fredApiKey = NK_KEYS.fred;
+    saveState();
+    document.getElementById("authOverlay").classList.add("hidden");
+    document.getElementById("authLabel").textContent = "👤 ניל";
+    showStatus("ברוך הבא ניל! כל מפתחות ה-API פעילים", "success");
+    renderApiSources();
+  } else {
+    showStatus("סיסמה שגויה", "error");
+  }
+}
+
+function guestAuth() {
+  STATE.authMode = "guest";
+  saveState();
+  document.getElementById("authOverlay").classList.add("hidden");
+  document.getElementById("authLabel").textContent = "👤 אורח";
+  showStatus("כניסה כאורח — מקורות חינמיים בלבד. ניתן להוסיף API keys בהגדרות", "success");
+  renderApiSources();
+}
+
+function checkAuth() {
+  if (STATE.authMode === "neil") {
+    // Ensure keys are loaded
+    if (!STATE.tdApiKey) STATE.tdApiKey = NK_KEYS.td;
+    if (!STATE.apiKey) STATE.apiKey = NK_KEYS.fmp;
+    if (!STATE.fredApiKey) STATE.fredApiKey = NK_KEYS.fred;
+    document.getElementById("authOverlay").classList.add("hidden");
+    document.getElementById("authLabel").textContent = "👤 ניל";
+  } else if (STATE.authMode === "guest") {
+    document.getElementById("authOverlay").classList.add("hidden");
+    document.getElementById("authLabel").textContent = "👤 אורח";
+  }
+  // else: show auth dialog (default)
+  renderApiSources();
+}
+
+function renderApiSources() {
+  const el = document.getElementById("apiSourcesList");
+  if (!el) return;
+  el.innerHTML = API_SOURCES.sort((a,b) => b.priority - a.priority).map(s => {
+    const hasKey = s.id === "td" ? !!STATE.tdApiKey : s.id === "fmp" ? !!STATE.apiKey : s.id === "fred" ? !!STATE.fredApiKey : true;
+    const active = !s.keyRequired || hasKey;
+    return `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${active ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.1)'};color:${active ? 'var(--green)' : 'var(--text-ghost)'}">${s.name} ${active ? '✓' : '🔒'}</span>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART (simple canvas-based)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _chartSymbol = null;
+let _chartName = null;
+
+function openChart(symbol, name, funds) {
+  _chartSymbol = symbol;
+  _chartName = name;
+  document.getElementById("chartTitle").textContent = name;
+  document.getElementById("chartModal").classList.remove("hidden");
+  // Reset range buttons
+  document.querySelectorAll(".chart-range").forEach(b => b.classList.toggle("active", b.dataset.range === "1y"));
+  loadChart(symbol, "1y");
+  // Show tracking funds
+  const fundsEl = document.getElementById("chartFunds");
+  if (funds && (funds.usd?.length || funds.ils?.length)) {
+    let fhtml = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">📋 קרנות מחקות:</div>`;
+    if (funds.usd?.length) fhtml += `<div style="font-size:11px;color:var(--text-faint);margin-bottom:4px">דולריות: ${funds.usd.join(', ')}</div>`;
+    if (funds.ils?.length) fhtml += `<div style="font-size:11px;color:var(--text-faint)">שקליות: ${funds.ils.join(', ')}</div>`;
+    fundsEl.innerHTML = fhtml;
+  } else {
+    fundsEl.innerHTML = '';
+  }
+}
+
+function closeChart(e) {
+  if (e.target === document.getElementById("chartModal")) {
+    document.getElementById("chartModal").classList.add("hidden");
+  }
+}
+
+async function loadChart(symbol, range, btn) {
+  symbol = symbol || _chartSymbol;
+  if (!symbol) return;
+  if (btn) {
+    document.querySelectorAll(".chart-range").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+  }
+  const canvas = document.getElementById("chartCanvas");
+  const ctx = canvas.getContext("2d");
+  canvas.width = canvas.parentElement.clientWidth;
+  canvas.height = canvas.parentElement.clientHeight;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "14px Rubik";
+  ctx.textAlign = "center";
+  ctx.fillText("טוען גרף...", canvas.width/2, canvas.height/2);
+
+  try {
+    const interval = range === "10y" || range === "5y" ? "1mo" : range === "2y" ? "1wk" : "1d";
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
+    const resp = await fetchWithProxy(url);
+    const json = await resp.json();
+    const result = json.chart?.result?.[0];
+    if (!result) throw new Error("No data");
+    const closes = result.indicators?.quote?.[0]?.close || [];
+    const timestamps = result.timestamp || [];
+    drawChart(ctx, canvas, timestamps, closes, _chartName);
+  } catch(e) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ef4444";
+    ctx.fillText("שגיאה בטעינת גרף: " + e.message, canvas.width/2, canvas.height/2);
+  }
+}
+
+function drawChart(ctx, canvas, timestamps, closes, name) {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const data = closes.map((v, i) => [timestamps[i], v]).filter(d => d[1] !== null);
+  if (data.length < 2) return;
+  const prices = data.map(d => d[1]);
+  const min = Math.min(...prices) * 0.98;
+  const max = Math.max(...prices) * 1.02;
+  const range = max - min;
+  const pad = { top: 30, bottom: 40, left: 60, right: 20 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+  // Grid
+  ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + ch * (i / 4);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    ctx.fillStyle = "#64748b"; ctx.font = "11px JetBrains Mono"; ctx.textAlign = "right";
+    ctx.fillText((max - range * i / 4).toFixed(2), pad.left - 6, y + 4);
+  }
+  // Date labels
+  ctx.fillStyle = "#64748b"; ctx.font = "10px JetBrains Mono"; ctx.textAlign = "center";
+  for (let i = 0; i < 5; i++) {
+    const idx = Math.floor(data.length * i / 4);
+    if (idx < data.length) {
+      const d = new Date(data[idx][0] * 1000);
+      const lbl = d.toLocaleDateString("he-IL", { month: "short", year: "2-digit" });
+      ctx.fillText(lbl, pad.left + cw * (idx / (data.length - 1)), h - pad.bottom + 16);
+    }
+  }
+  // Line
+  const isUp = prices[prices.length - 1] >= prices[0];
+  ctx.strokeStyle = isUp ? "#22c55e" : "#ef4444";
+  ctx.lineWidth = 2; ctx.beginPath();
+  data.forEach((d, i) => {
+    const x = pad.left + cw * (i / (data.length - 1));
+    const y = pad.top + ch * (1 - (d[1] - min) / range);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  // Fill
+  ctx.lineTo(pad.left + cw, pad.top + ch);
+  ctx.lineTo(pad.left, pad.top + ch);
+  ctx.closePath();
+  ctx.fillStyle = isUp ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)";
+  ctx.fill();
+  // Stats
+  const first = prices[0], last = prices[prices.length - 1];
+  const pct = ((last - first) / first * 100).toFixed(2);
+  ctx.fillStyle = isUp ? "#22c55e" : "#ef4444";
+  ctx.font = "bold 14px Rubik"; ctx.textAlign = "left";
+  ctx.fillText(`${last.toFixed(2)} (${pct > 0 ? '+' : ''}${pct}%)`, pad.left + 8, pad.top - 8);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STORAGE (localStorage + JSON file)
@@ -247,7 +425,9 @@ function renderIndices() {
   html += `<th>📌 רפרנס</th>`;
   html += `</tr></thead><tbody>`;
   INDICES.forEach(idx => {
-    html += `<tr><td class="label">${idx.name}</td><td>${idx.region}</td>`;
+    const funds = typeof INDEX_FUNDS !== 'undefined' ? INDEX_FUNDS[idx.key] : null;
+    const escapedName = idx.name.replace(/'/g, "\\'");
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${idx.sym}','${escapedName}',${JSON.stringify(funds)});return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות מחקות">${idx.name}</a></td><td>${idx.region}</td>`;
     INDEX_FIELDS.forEach(f => {
       if (f.ref) {
         const ref = getRefChange("indices", idx.key);
@@ -276,16 +456,38 @@ function renderIndices() {
   document.getElementById("ts-indices").textContent = "עדכון אחרון: " + fmtDate(STATE.timestamps.indices);
 }
 
+function switchSectorRegion(region, btn) {
+  SECTOR_ACTIVE_REGION = region;
+  document.querySelectorAll(".sector-region-btn").forEach(b => b.classList.toggle("active", b.dataset.region === region));
+  renderSectors();
+}
+
 function renderSectors() {
-  let html = `<thead><tr><th>סקטור</th>`;
-  SECTOR_FIELDS.forEach(f => html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`);
+  const sectors = getCurrentSectors();
+  const etfs = getCurrentSectorETFs();
+  let html = `<thead><tr><th>��קטור</th>`;
+  SECTOR_FIELDS.forEach(f => {
+    if (f.key === "funds") {
+      html += `<th>${f.label}</th>`;
+    } else {
+      html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`;
+    }
+  });
   html += `</tr></thead><tbody>`;
-  SECTORS.forEach(sec => {
+  sectors.forEach(sec => {
     const sectorName = sec.name;
-    html += `<tr><td class="label">${sectorName}</td>`;
+    const etf = sec.etf || etfs[sectorName];
+    const escapedName = sectorName.replace(/'/g, "\\'");
+    const fundsJson = sec.funds ? JSON.stringify(sec.funds) : 'null';
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${etf}','${escapedName}',${fundsJson});return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות">${sectorName}</a></td>`;
     SECTOR_FIELDS.forEach(f => {
       if (f.key === "region") {
         html += `<td>${sec.region}</td>`;
+      } else if (f.key === "funds") {
+        const fundsList = [];
+        if (sec.funds?.usd?.length) fundsList.push(...sec.funds.usd);
+        if (sec.funds?.ils?.length) fundsList.push(...sec.funds.ils);
+        html += `<td style="font-family:var(--sans);font-size:11px;color:var(--text-faint)">${fundsList.length ? fundsList.join(', ') : '—'}</td>`;
       } else {
         html += `<td>${makeCell("sectors", sectorName, f.key, STATE.sectors[sectorName]?.[f.key], f.color)}</td>`;
       }
@@ -300,7 +502,8 @@ function renderSectors() {
 function renderCommodities() {
   let html = `<thead><tr><th>סחורה</th><th>מחיר</th><th>שינוי יומי %</th><th>שינוי מתחילת שנה %</th><th>שינוי 12 חודשים %</th><th>שינוי מרפרנס %</th><th>📌 רפרנס</th><th>יחידה</th></tr></thead><tbody>`;
   COMMODITIES.forEach(c => {
-    html += `<tr><td class="label">${c.name}</td>`;
+    const escapedName = c.name.replace(/'/g, "\\'");
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${c.sym}','${escapedName}');return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף">${c.name}</a></td>`;
     html += `<td>${makeCell("commodities", c.key, "price", STATE.commodities[c.key]?.price, false)}</td>`;
     html += `<td>${makeCell("commodities", c.key, "change_pct", STATE.commodities[c.key]?.change_pct, true)}</td>`;
     html += `<td>${makeCell("commodities", c.key, "change_ytd", STATE.commodities[c.key]?.change_ytd, true)}</td>`;
@@ -331,7 +534,8 @@ function renderCommodities() {
 function renderCurrencies() {
   let html = `<thead><tr><th>מטבע</th><th>שם</th><th>שער מול ₪</th><th>שינוי יומי %</th></tr></thead><tbody>`;
   CURRENCIES.forEach(c => {
-    html += `<tr><td class="label">${c.key}</td><td>${c.name}</td>`;
+    const yahooSym = c.yahoo || (c.cross ? c.cross[0] : c.key);
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${yahooSym}','${c.name}');return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף">${c.key}</a></td><td>${c.name}</td>`;
     html += `<td>${makeCell("currencies", c.key, "rate", STATE.currencies[c.key]?.rate, false)}</td>`;
     html += `<td>${makeCell("currencies", c.key, "change_pct", STATE.currencies[c.key]?.change_pct, true)}</td>`;
     html += `</tr>`;
@@ -497,4 +701,5 @@ function editPortfolioField(idx, field) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 loadState();
+checkAuth();
 renderAll();

@@ -198,7 +198,7 @@ async function fetchWorldBank() {
   const results = {};
   for (const [field, indicator] of Object.entries(WB_INDICATORS)) {
     try {
-      const url = `https://api.worldbank.org/v2/country/${WB_COUNTRIES}/indicator/${indicator}?format=json&per_page=60&date=2020:2026`;
+      const url = `https://api.worldbank.org/v2/country/${WB_COUNTRIES}/indicator/${indicator}?format=json&per_page=100&date=2018:2026`;
       const resp = await fetchWithTimeout(url);
       if (!resp.ok) continue;
       const json = await resp.json();
@@ -214,7 +214,7 @@ async function fetchWorldBank() {
         }
       });
       // Map to our region codes
-      const codeMap = { USA: "US", EUU: "EU", JPN: "JP", CHN: "CN", IND: "IN", ISR: "IL" };
+      const codeMap = WB_COUNTRY_MAP;
       Object.entries(byCountry).forEach(([iso3, val]) => {
         const region = codeMap[iso3];
         if (!region) return;
@@ -317,6 +317,8 @@ async function fetchStockDetails(symbol) {
       eps: d.eps ? parseFloat(d.eps) : null,
       marketCap: d.marketCap || null,
       beta: d.beta ? parseFloat(d.beta) : null,
+      pb: d.pb ? parseFloat(d.pb) : (d.priceToBook ? parseFloat(d.priceToBook) : null),
+      debtEquity: d.debtEquity ? parseFloat(d.debtEquity) : (d.debtToEquity ? parseFloat(d.debtToEquity) : null),
       divYield: d.dividendYield || null,
       revenue: d.revenue || null,
       sharesOut: d.sharesOutstanding || d.shares || null,
@@ -352,6 +354,37 @@ async function fetchStockCashFlow(symbol) {
       dividendsPaid: extract(/Dividends Paid[^<]*<[^>]*>([^<]+)/i),
     };
   } catch(e) { return {}; }
+}
+
+// ── Bizportal fallback for Israeli stocks (.TA) ─────────────────────────
+
+async function fetchBizportalData(symbol) {
+  // Strip .TA suffix for Bizportal
+  const cleanSym = symbol.replace('.TA', '');
+  try {
+    const url = `https://www.bizportal.co.il/capitalmarket/quote/generalview/${cleanSym}`;
+    const resp = await fetchWithProxy(url, 15000);
+    const text = await resp.text();
+    const result = {};
+    // Try to extract P/E ratio
+    const peMatch = text.match(/מכפיל רווח[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i) ||
+                    text.match(/P\/E[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (peMatch) result.pe = parseFloat(peMatch[1].replace(',', ''));
+    // P/B ratio
+    const pbMatch = text.match(/מכפיל הון[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i) ||
+                    text.match(/P\/B[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (pbMatch) result.pb = parseFloat(pbMatch[1].replace(',', ''));
+    // Market cap
+    const mcMatch = text.match(/שווי שוק[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (mcMatch) result.marketCap = mcMatch[1];
+    // Dividend yield
+    const divMatch = text.match(/תשואת דיבידנד[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+%?)/i);
+    if (divMatch) result.divYield = divMatch[1];
+    // Debt/equity
+    const deMatch = text.match(/הון למאזן[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (deMatch) result.debtEquity = parseFloat(deMatch[1].replace(',', ''));
+    return result;
+  } catch(e) { console.warn("Bizportal:", e.message); return {}; }
 }
 
 // ── Macro data from Trading Economics (scrape) ────────────────────────────
@@ -488,6 +521,7 @@ async function fetchAllData() {
   COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
   yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
   yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
+  yahooSymbols.push("DX-Y.NYB"); yahooMap["DX-Y.NYB"] = { cat: "fear", key: "us_dollar_index" };
   STATE.portfolio.forEach(s => {
     const sym = s.symbol.toUpperCase();
     if (!yahooMap[sym]) {
@@ -590,7 +624,13 @@ async function fetchAllData() {
   if (yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
-      for (const [sectorName, etfSym] of Object.entries(SECTOR_ETFS)) {
+      // Use all regions' sectors for historical data
+      const allSectorPairs = [];
+      Object.values(SECTOR_REGIONS).forEach(r => r.sectors.forEach(s => {
+        if (s.etf && !allSectorPairs.find(p => p[0] === s.name && p[1] === s.etf))
+          allSectorPairs.push([s.name, s.etf]);
+      }));
+      for (const [sectorName, etfSym] of allSectorPairs) {
         try {
           const ytdChange = await yahooYTDChange(etfSym);
           if (ytdChange !== null) {
@@ -737,19 +777,32 @@ async function fetchAllData() {
     else errors.push("מט״ח: Yahoo");
   } catch(e) { errors.push("מט״ח: " + e.message); }
 
-  // 4. SECTORS via Yahoo Finance sector ETFs (free, no key needed)
+  // 4. SECTORS via Yahoo Finance — fetch ALL regions' ETFs at once
   try {
     showStatus("שולף ביצועי סקטורים מ-Yahoo Finance...", "success");
-    const sectorSymbols = Object.values(SECTOR_ETFS);
-    const sectorResults = await yahooBatch(sectorSymbols);
+    // Collect all unique ETF symbols from all regions
+    const allSectorETFs = [];
+    const etfToSector = {}; // map etf → [{region, sectorName}]
+    Object.entries(SECTOR_REGIONS).forEach(([regionKey, regionData]) => {
+      regionData.sectors.forEach(sec => {
+        if (sec.etf && !allSectorETFs.includes(sec.etf)) {
+          allSectorETFs.push(sec.etf);
+        }
+        if (!etfToSector[sec.etf]) etfToSector[sec.etf] = [];
+        etfToSector[sec.etf].push({ region: regionKey, name: sec.name });
+      });
+    });
+    const sectorResults = await yahooBatch(allSectorETFs);
     let secOk = 0;
-    Object.entries(SECTOR_ETFS).forEach(([sectorName, etfSym]) => {
-      const q = sectorResults.find(r => r.symbol === etfSym);
-      if (!q) return;
-      if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
-      STATE.sectors[sectorName].ytd = q.change_pct.toFixed(2);
-      STATE.sectors[sectorName].price = q.price.toFixed(2);
-      secOk++;
+    sectorResults.forEach(q => {
+      const mappings = etfToSector[q.symbol];
+      if (!mappings) return;
+      mappings.forEach(m => {
+        if (!STATE.sectors[m.name]) STATE.sectors[m.name] = {};
+        STATE.sectors[m.name].ytd = q.change_pct.toFixed(2);
+        STATE.sectors[m.name].price = q.price.toFixed(2);
+        secOk++;
+      });
     });
     if (secOk > 0) { updateTimestamp("sectors"); successCount++; }
     else errors.push("סקטורים: Yahoo");
@@ -845,11 +898,17 @@ async function fetchAllData() {
         ["US_interest", "US", "interest_rate"],
         ["US_unemployment", "US", "unemployment"],
         ["IL_interest", "IL", "interest_rate"],
-        ["EU_interest", "EU", "interest_rate"],
-        ["EU_unemployment", "EU", "unemployment"],
+        ["GB_interest", "GB", "interest_rate"],
+        ["GB_unemployment", "GB", "unemployment"],
+        ["DE_unemployment", "DE", "unemployment"],
+        ["FR_unemployment", "FR", "unemployment"],
         ["JP_interest", "JP", "interest_rate"],
         ["JP_unemployment", "JP", "unemployment"],
         ["CN_interest", "CN", "interest_rate"],
+        ["BR_interest", "BR", "interest_rate"],
+        ["KR_interest", "KR", "interest_rate"],
+        ["MX_interest", "MX", "interest_rate"],
+        ["TR_interest", "TR", "interest_rate"],
       ];
       mapping.forEach(([fredKey, region, field]) => {
         if (fred[fredKey]) {
@@ -863,9 +922,15 @@ async function fetchAllData() {
       const inflationMapping = [
         ["US_inflation", "US"],
         ["IL_inflation", "IL"],
-        ["EU_inflation", "EU"],
+        ["GB_inflation", "GB"],
+        ["DE_inflation", "DE"],
+        ["FR_inflation", "FR"],
         ["JP_inflation", "JP"],
         ["CN_inflation", "CN"],
+        ["BR_inflation", "BR"],
+        ["KR_inflation", "KR"],
+        ["MX_inflation", "MX"],
+        ["TR_inflation", "TR"],
       ];
       inflationMapping.forEach(([fredKey, region]) => {
         if (fred[fredKey]) {
@@ -938,7 +1003,7 @@ async function fetchAllData() {
   // 11. Fetch P/E for index ETFs via stockanalysis.com JSON API
   try {
     showStatus("שולף מכפילים למדדים מ-Stock Analysis...", "success");
-    const etfPESymbols = ["SPY", "QQQ", "DIA", "IWM", "VGK", "EWJ", "FXI", "INDA", "EIS", "EEM"];
+    const etfPESymbols = INDICES.filter(i => i.sa && i.saType === "e").map(i => i.sym);
     for (const sym of etfPESymbols) {
       try {
         const metrics = await fetchETFMetrics(sym);
@@ -951,7 +1016,35 @@ async function fetchAllData() {
     }
   } catch(e) { console.warn("ETF P/E:", e.message); }
 
-  // 12. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
+  // 12. FRED — Yield Spread 10Y-2Y (auto-calc for fear screen)
+  if (STATE.fredApiKey) {
+    try {
+      showStatus("מחשב פער עקום תשואות 10Y-2Y...", "success");
+      const [dgs10, dgs2] = await Promise.all([
+        fredFetch("DGS10").catch(() => null),
+        fredFetch("DGS2").catch(() => null),
+      ]);
+      if (dgs10 && dgs2) {
+        const spread = (dgs10.value - dgs2.value).toFixed(2);
+        if (!STATE.fear.yield_spread) STATE.fear.yield_spread = {};
+        STATE.fear.yield_spread.value = spread;
+        updateTimestamp("fear");
+      }
+    } catch(e) { console.warn("Yield Spread:", e.message); }
+  }
+
+  // 12b. Fetch % S&P500 stocks above 200-day MA (via Yahoo: ^SPXA200R)
+  try {
+    showStatus("שולף % מניות מעל ממוצע 200 יום...", "success");
+    const ma200q = await yahooQuote("^SPXA200R").catch(() => null);
+    if (ma200q && ma200q.price) {
+      if (!STATE.fear.sp500_above_200ma) STATE.fear.sp500_above_200ma = {};
+      STATE.fear.sp500_above_200ma.value = ma200q.price.toFixed(1);
+      updateTimestamp("fear");
+    }
+  } catch(e) { console.warn("MA200:", e.message); }
+
+  // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
   try {
     showStatus("שולף Shiller CAPE ומכפילים...", "success");
     const multpl = await fetchMultpl();
@@ -1022,15 +1115,24 @@ async function scanStock() {
     return;
   }
 
-  // Fetch extended data from stockanalysis.com + Yahoo historical
+  // Fetch extended data from stockanalysis.com + Yahoo historical + Bizportal for .TA
   resultDiv.innerHTML = `<div style="color:var(--text-dim);padding:20px;text-align:center">שולף נתונים מורחבים ל-${sym}...</div>`;
   try {
-    const [det, fc, cf] = await Promise.all([
+    const isIsraeli = sym.includes('.TA');
+    const [det, fc, cf, biz] = await Promise.all([
       fetchStockDetails(sym).catch(() => ({})),
       fetchStockForecast(sym).catch(() => ({})),
       fetchStockCashFlow(sym).catch(() => ({})),
+      isIsraeli ? fetchBizportalData(sym).catch(() => ({})) : Promise.resolve({}),
     ]);
-    details = det; forecast = fc; cashflow = cf;
+    // Merge: stockanalysis first, then Bizportal as fallback for Israeli stocks
+    details = { ...biz, ...det };
+    if (!details.pe && biz.pe) details.pe = biz.pe;
+    if (!details.pb && biz.pb) details.pb = biz.pb;
+    if (!details.debtEquity && biz.debtEquity) details.debtEquity = biz.debtEquity;
+    if (!details.marketCap && biz.marketCap) details.marketCap = biz.marketCap;
+    if (!details.divYield && biz.divYield) details.divYield = biz.divYield;
+    forecast = fc; cashflow = cf;
   } catch(e) {}
 
   let ytdChange = null, m12Change = null, hist10y = null;
@@ -1090,7 +1192,9 @@ async function scanStock() {
       <div class="scanner-grid">
         <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${pe ? pe.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${fpe ? fpe.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? "$" + merged.eps.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${merged.pb ? merged.pb.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${merged.debtEquity ? merged.debtEquity.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? (sym.includes('.TA') ? '₪' : '$') + merged.eps.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${merged.beta?.toFixed(2) || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${merged.divYield || "—"}</span></div>
@@ -1133,17 +1237,17 @@ async function scanStock() {
         <div>
           <div class="scanner-symbol">${sym}</div>
           ${q.name ? `<div class="scanner-name">${q.name}</div>` : ""}
-          <div style="font-size:11px;color:var(--text-faint);margin-top:4px">מקור: ${source}</div>
+          <div style="font-size:11px;color:var(--text-faint);margin-top:4px">מקור: ${source}${sym.includes('.TA') ? ' + Bizportal' : ''}</div>
         </div>
         <div class="scanner-price-block">
-          <div class="scanner-price">$${q.price.toFixed(2)}</div>
+          <div class="scanner-price">${sym.includes('.TA') ? '₪' : '$'}${q.price.toFixed(2)}</div>
           <div class="scanner-change ${changeClass}">${sign}${q.change_pct.toFixed(2)}%</div>
         </div>
       </div>
       <div class="scanner-grid">
-        <div class="scanner-item"><span class="scanner-label">פתיחה:</span> <span>$${q.open?.toFixed(2) || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">גבוה:</span> <span>$${q.high?.toFixed(2) || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">נמוך:</span> <span>$${q.low?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">פתיחה:</span> <span>${sym.includes('.TA') ? '₪' : '$'}${q.open?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">גבוה:</span> <span>${sym.includes('.TA') ? '₪' : '$'}${q.high?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">נמוך:</span> <span>${sym.includes('.TA') ? '₪' : '$'}${q.low?.toFixed(2) || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">מחזור:</span> <span>${q.volume?.toLocaleString() || "—"}</span></div>
       </div>
       ${fundHTML}
@@ -1154,8 +1258,16 @@ async function scanStock() {
         <button class="btn btn-success btn-small" onclick="addFromScanner('${sym}', '${(q.name || "").replace(/'/g, "")}')">+ הוסף לתיק</button>
         <a href="https://finance.yahoo.com/quote/${sym}" target="_blank" class="btn btn-outline">📊 Yahoo Finance</a>
         <a href="https://stockanalysis.com/stocks/${sym.toLowerCase()}/" target="_blank" class="btn btn-outline">📈 Stock Analysis</a>
+        <a href="https://finviz.com/quote.ashx?t=${sym}" target="_blank" class="btn btn-outline">📉 Finviz</a>
         <a href="https://www.google.com/finance/quote/${sym}:NASDAQ" target="_blank" class="btn btn-outline">🔎 Google Finance</a>
         <a href="https://seekingalpha.com/symbol/${sym}" target="_blank" class="btn btn-outline">🔬 Seeking Alpha</a>
+        ${sym.includes('.TA') ? `
+        <a href="https://www.bizportal.co.il/capitalmarket/quote/generalview/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🇮🇱 Bizportal</a>
+        <a href="https://www.tase.co.il/he/market_data/security/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🏛 הבורסה</a>
+        <a href="https://maya.tase.co.il/company/${sym.replace('.TA','')}?view=reports" target="_blank" class="btn btn-outline">📄 דו״חות (מאי״ה)</a>
+        ` : `
+        <a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${sym}&type=10-K&dateb=&owner=include&count=10" target="_blank" class="btn btn-outline">📄 SEC EDGAR</a>
+        `}
       </div>
     </div>
   `;
