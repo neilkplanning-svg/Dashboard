@@ -356,6 +356,37 @@ async function fetchStockCashFlow(symbol) {
   } catch(e) { return {}; }
 }
 
+// ── Bizportal fallback for Israeli stocks (.TA) ─────────────────────────
+
+async function fetchBizportalData(symbol) {
+  // Strip .TA suffix for Bizportal
+  const cleanSym = symbol.replace('.TA', '');
+  try {
+    const url = `https://www.bizportal.co.il/capitalmarket/quote/generalview/${cleanSym}`;
+    const resp = await fetchWithProxy(url, 15000);
+    const text = await resp.text();
+    const result = {};
+    // Try to extract P/E ratio
+    const peMatch = text.match(/מכפיל רווח[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i) ||
+                    text.match(/P\/E[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (peMatch) result.pe = parseFloat(peMatch[1].replace(',', ''));
+    // P/B ratio
+    const pbMatch = text.match(/מכפיל הון[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i) ||
+                    text.match(/P\/B[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (pbMatch) result.pb = parseFloat(pbMatch[1].replace(',', ''));
+    // Market cap
+    const mcMatch = text.match(/שווי שוק[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (mcMatch) result.marketCap = mcMatch[1];
+    // Dividend yield
+    const divMatch = text.match(/תשואת דיבידנד[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+%?)/i);
+    if (divMatch) result.divYield = divMatch[1];
+    // Debt/equity
+    const deMatch = text.match(/הון למאזן[^<]*<[^>]*>[^<]*<[^>]*>([0-9.,]+)/i);
+    if (deMatch) result.debtEquity = parseFloat(deMatch[1].replace(',', ''));
+    return result;
+  } catch(e) { console.warn("Bizportal:", e.message); return {}; }
+}
+
 // ── Macro data from Trading Economics (scrape) ────────────────────────────
 
 async function fetchMacroScrape() {
@@ -593,7 +624,13 @@ async function fetchAllData() {
   if (yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
-      for (const [sectorName, etfSym] of Object.entries(SECTOR_ETFS)) {
+      // Use all regions' sectors for historical data
+      const allSectorPairs = [];
+      Object.values(SECTOR_REGIONS).forEach(r => r.sectors.forEach(s => {
+        if (s.etf && !allSectorPairs.find(p => p[0] === s.name && p[1] === s.etf))
+          allSectorPairs.push([s.name, s.etf]);
+      }));
+      for (const [sectorName, etfSym] of allSectorPairs) {
         try {
           const ytdChange = await yahooYTDChange(etfSym);
           if (ytdChange !== null) {
@@ -740,19 +777,32 @@ async function fetchAllData() {
     else errors.push("מט״ח: Yahoo");
   } catch(e) { errors.push("מט״ח: " + e.message); }
 
-  // 4. SECTORS via Yahoo Finance sector ETFs (free, no key needed)
+  // 4. SECTORS via Yahoo Finance — fetch ALL regions' ETFs at once
   try {
     showStatus("שולף ביצועי סקטורים מ-Yahoo Finance...", "success");
-    const sectorSymbols = Object.values(SECTOR_ETFS);
-    const sectorResults = await yahooBatch(sectorSymbols);
+    // Collect all unique ETF symbols from all regions
+    const allSectorETFs = [];
+    const etfToSector = {}; // map etf → [{region, sectorName}]
+    Object.entries(SECTOR_REGIONS).forEach(([regionKey, regionData]) => {
+      regionData.sectors.forEach(sec => {
+        if (sec.etf && !allSectorETFs.includes(sec.etf)) {
+          allSectorETFs.push(sec.etf);
+        }
+        if (!etfToSector[sec.etf]) etfToSector[sec.etf] = [];
+        etfToSector[sec.etf].push({ region: regionKey, name: sec.name });
+      });
+    });
+    const sectorResults = await yahooBatch(allSectorETFs);
     let secOk = 0;
-    Object.entries(SECTOR_ETFS).forEach(([sectorName, etfSym]) => {
-      const q = sectorResults.find(r => r.symbol === etfSym);
-      if (!q) return;
-      if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
-      STATE.sectors[sectorName].ytd = q.change_pct.toFixed(2);
-      STATE.sectors[sectorName].price = q.price.toFixed(2);
-      secOk++;
+    sectorResults.forEach(q => {
+      const mappings = etfToSector[q.symbol];
+      if (!mappings) return;
+      mappings.forEach(m => {
+        if (!STATE.sectors[m.name]) STATE.sectors[m.name] = {};
+        STATE.sectors[m.name].ytd = q.change_pct.toFixed(2);
+        STATE.sectors[m.name].price = q.price.toFixed(2);
+        secOk++;
+      });
     });
     if (secOk > 0) { updateTimestamp("sectors"); successCount++; }
     else errors.push("סקטורים: Yahoo");
@@ -966,7 +1016,35 @@ async function fetchAllData() {
     }
   } catch(e) { console.warn("ETF P/E:", e.message); }
 
-  // 12. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
+  // 12. FRED — Yield Spread 10Y-2Y (auto-calc for fear screen)
+  if (STATE.fredApiKey) {
+    try {
+      showStatus("מחשב פער עקום תשואות 10Y-2Y...", "success");
+      const [dgs10, dgs2] = await Promise.all([
+        fredFetch("DGS10").catch(() => null),
+        fredFetch("DGS2").catch(() => null),
+      ]);
+      if (dgs10 && dgs2) {
+        const spread = (dgs10.value - dgs2.value).toFixed(2);
+        if (!STATE.fear.yield_spread) STATE.fear.yield_spread = {};
+        STATE.fear.yield_spread.value = spread;
+        updateTimestamp("fear");
+      }
+    } catch(e) { console.warn("Yield Spread:", e.message); }
+  }
+
+  // 12b. Fetch % S&P500 stocks above 200-day MA (via Yahoo: ^SPXA200R)
+  try {
+    showStatus("שולף % מניות מעל ממוצע 200 יום...", "success");
+    const ma200q = await yahooQuote("^SPXA200R").catch(() => null);
+    if (ma200q && ma200q.price) {
+      if (!STATE.fear.sp500_above_200ma) STATE.fear.sp500_above_200ma = {};
+      STATE.fear.sp500_above_200ma.value = ma200q.price.toFixed(1);
+      updateTimestamp("fear");
+    }
+  } catch(e) { console.warn("MA200:", e.message); }
+
+  // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
   try {
     showStatus("שולף Shiller CAPE ומכפילים...", "success");
     const multpl = await fetchMultpl();
@@ -1037,15 +1115,25 @@ async function scanStock() {
     return;
   }
 
-  // Fetch extended data from stockanalysis.com + Yahoo historical
+  // Fetch extended data from stockanalysis.com + Yahoo historical + Bizportal for .TA
   resultDiv.innerHTML = `<div style="color:var(--text-dim);padding:20px;text-align:center">שולף נתונים מורחבים ל-${sym}...</div>`;
   try {
-    const [det, fc, cf] = await Promise.all([
+    const isIsraeli = sym.includes('.TA');
+    const [det, fc, cf, biz] = await Promise.all([
       fetchStockDetails(sym).catch(() => ({})),
       fetchStockForecast(sym).catch(() => ({})),
       fetchStockCashFlow(sym).catch(() => ({})),
+      isIsraeli ? fetchBizportalData(sym).catch(() => ({})) : Promise.resolve({}),
     ]);
-    details = det; forecast = fc; cashflow = cf;
+    // Merge: stockanalysis first, then Bizportal as fallback for Israeli stocks
+    details = { ...biz, ...det };
+    // If stockanalysis didn't return PE but Bizportal did, use Bizportal
+    if (!details.pe && biz.pe) details.pe = biz.pe;
+    if (!details.pb && biz.pb) details.pb = biz.pb;
+    if (!details.debtEquity && biz.debtEquity) details.debtEquity = biz.debtEquity;
+    if (!details.marketCap && biz.marketCap) details.marketCap = biz.marketCap;
+    if (!details.divYield && biz.divYield) details.divYield = biz.divYield;
+    forecast = fc; cashflow = cf;
   } catch(e) {}
 
   let ytdChange = null, m12Change = null, hist10y = null;
@@ -1107,7 +1195,7 @@ async function scanStock() {
         <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${fpe ? fpe.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${merged.pb ? merged.pb.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${merged.debtEquity ? merged.debtEquity.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? "$" + merged.eps.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? (sym.includes('.TA') ? '₪' : '$') + merged.eps.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${merged.beta?.toFixed(2) || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${merged.divYield || "—"}</span></div>
@@ -1150,17 +1238,17 @@ async function scanStock() {
         <div>
           <div class="scanner-symbol">${sym}</div>
           ${q.name ? `<div class="scanner-name">${q.name}</div>` : ""}
-          <div style="font-size:11px;color:var(--text-faint);margin-top:4px">מקור: ${source}</div>
+          <div style="font-size:11px;color:var(--text-faint);margin-top:4px">מקור: ${source}${sym.includes('.TA') ? ' + Bizportal' : ''}</div>
         </div>
         <div class="scanner-price-block">
-          <div class="scanner-price">$${q.price.toFixed(2)}</div>
+          <div class="scanner-price">${sym.includes('.TA') ? '₪' : '$'}${q.price.toFixed(2)}</div>
           <div class="scanner-change ${changeClass}">${sign}${q.change_pct.toFixed(2)}%</div>
         </div>
       </div>
       <div class="scanner-grid">
-        <div class="scanner-item"><span class="scanner-label">פתיחה:</span> <span>$${q.open?.toFixed(2) || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">גבוה:</span> <span>$${q.high?.toFixed(2) || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">נמוך:</span> <span>$${q.low?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">פתיחה:</span> <span>${sym.includes('.TA') ? '₪' : '$'}${q.open?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">גבוה:</span> <span>${sym.includes('.TA') ? '₪' : '$'}${q.high?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">נמוך:</span> <span>${sym.includes('.TA') ? '₪' : '$'}${q.low?.toFixed(2) || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">מחזור:</span> <span>${q.volume?.toLocaleString() || "—"}</span></div>
       </div>
       ${fundHTML}

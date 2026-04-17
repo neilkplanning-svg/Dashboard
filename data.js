@@ -100,26 +100,83 @@ const INDEX_FIELDS = [
   { key: "ref_change", label: "שינוי מרפרנס %", color: true, ref: true },
 ];
 
-// ── Sectors ───────────────────────────────────────────────────────────────
-const SECTORS = [
-  { name: "Technology", region: "🇺🇸 US" },
-  { name: "Healthcare", region: "🇺🇸 US" },
-  { name: "Financials", region: "🇺🇸 US" },
-  { name: "Energy", region: "🇺🇸 US" },
-  { name: "Consumer Discretionary", region: "🇺🇸 US" },
-  { name: "Consumer Staples", region: "🇺🇸 US" },
-  { name: "Industrials", region: "🇺🇸 US" },
-  { name: "Materials", region: "🇺🇸 US" },
-  { name: "Real Estate", region: "🇺🇸 US" },
-  { name: "Utilities", region: "🇺🇸 US" },
-  { name: "Communication Services", region: "🇺🇸 US" },
-];
-
-const SECTOR_ETFS = {
-  "Technology": "XLK", "Healthcare": "XLV", "Financials": "XLF", "Energy": "XLE",
-  "Consumer Discretionary": "XLY", "Consumer Staples": "XLP", "Industrials": "XLI",
-  "Materials": "XLB", "Real Estate": "XLRE", "Utilities": "XLU", "Communication Services": "XLC"
+// ── Sectors by Region ─────────────────────────────────────────────────────
+const SECTOR_REGIONS = {
+  US: {
+    label: "🇺🇸 ארה״ב",
+    sectors: [
+      { name: "Technology", etf: "XLK", funds: { usd: ["VGT","IYW"], ils: [] } },
+      { name: "Healthcare", etf: "XLV", funds: { usd: ["VHT","IYH"], ils: [] } },
+      { name: "Financials", etf: "XLF", funds: { usd: ["VFH","IYF"], ils: [] } },
+      { name: "Energy", etf: "XLE", funds: { usd: ["VDE","IYE"], ils: [] } },
+      { name: "Consumer Discretionary", etf: "XLY", funds: { usd: ["VCR"], ils: [] } },
+      { name: "Consumer Staples", etf: "XLP", funds: { usd: ["VDC"], ils: [] } },
+      { name: "Industrials", etf: "XLI", funds: { usd: ["VIS"], ils: [] } },
+      { name: "Materials", etf: "XLB", funds: { usd: ["VAW"], ils: [] } },
+      { name: "Real Estate", etf: "XLRE", funds: { usd: ["VNQ","IYR"], ils: [] } },
+      { name: "Utilities", etf: "XLU", funds: { usd: ["VPU"], ils: [] } },
+      { name: "Communication Services", etf: "XLC", funds: { usd: ["VOX"], ils: [] } },
+    ],
+  },
+  EU: {
+    label: "🇪🇺 אירופה",
+    sectors: [
+      { name: "Technology", etf: "IUIT.L", funds: { usd: ["IXN"], ils: [] } },
+      { name: "Healthcare", etf: "IUHC.L", funds: { usd: [], ils: [] } },
+      { name: "Financials", etf: "EUFN", funds: { usd: ["EUFN"], ils: [] } },
+      { name: "Energy", etf: "IXC", funds: { usd: [], ils: [] } },
+      { name: "Industrials", etf: "EXI", funds: { usd: [], ils: [] } },
+      { name: "Consumer Staples", etf: "KXI", funds: { usd: [], ils: [] } },
+      { name: "Real Estate", etf: "IFEU.L", funds: { usd: [], ils: [] } },
+      { name: "Utilities", etf: "JXI", funds: { usd: [], ils: [] } },
+    ],
+  },
+  IL: {
+    label: "🇮🇱 ישראל",
+    sectors: [
+      { name: "בנקים", etf: "TA35.TA", funds: { usd: [], ils: ["תכלית בנקים","הראל בנקים"] } },
+      { name: "טכנולוגיה", etf: "^TA125.TA", funds: { usd: [], ils: ["תכלית טכנולוגיה"] } },
+      { name: "נדל״ן ובינוי", etf: "^TA125.TA", funds: { usd: [], ils: ["תכלית נדלן ובינוי"] } },
+      { name: "נפט וגז", etf: "^TA125.TA", funds: { usd: [], ils: [] } },
+      { name: "ביטוח", etf: "^TA125.TA", funds: { usd: [], ils: [] } },
+      { name: "קמעונאות ומזון", etf: "^TA125.TA", funds: { usd: [], ils: [] } },
+    ],
+  },
+  CN: {
+    label: "🇨🇳 סין",
+    sectors: [
+      { name: "Technology", etf: "CQQQ", funds: { usd: ["CQQQ","KWEB"], ils: [] } },
+      { name: "Financials", etf: "CHIX", funds: { usd: ["GXC"], ils: [] } },
+      { name: "Consumer Discretionary", etf: "CHIQ", funds: { usd: ["CHIQ"], ils: [] } },
+      { name: "Healthcare", etf: "CHIH", funds: { usd: [], ils: [] } },
+      { name: "Real Estate", etf: "TAO", funds: { usd: ["TAO"], ils: [] } },
+      { name: "Energy", etf: "CHIE", funds: { usd: [], ils: [] } },
+      { name: "Industrials", etf: "CHII", funds: { usd: [], ils: [] } },
+    ],
+  },
 };
+
+// Active region for sector view (default: US)
+let SECTOR_ACTIVE_REGION = "US";
+
+// Computed — gets current region's sectors
+function getCurrentSectors() {
+  const region = SECTOR_REGIONS[SECTOR_ACTIVE_REGION];
+  if (!region) return [];
+  return region.sectors.map(s => ({ ...s, region: region.label }));
+}
+
+function getCurrentSectorETFs() {
+  const result = {};
+  const region = SECTOR_REGIONS[SECTOR_ACTIVE_REGION];
+  if (!region) return result;
+  region.sectors.forEach(s => { result[s.name] = s.etf; });
+  return result;
+}
+
+// Legacy compat
+const SECTORS = getCurrentSectors();
+const SECTOR_ETFS = getCurrentSectorETFs();
 
 const SECTOR_FIELDS = [
   { key: "region", label: "אזור", color: false },
@@ -127,7 +184,7 @@ const SECTOR_FIELDS = [
   { key: "change_ytd", label: "שינוי מתחילת שנה %", color: true },
   { key: "change_12m", label: "שינוי 12 חודשים %", color: true },
   { key: "pe", label: "P/E", color: false },
-  { key: "weight_sp500", label: "משקל S&P500 %", color: false, manual: true },
+  { key: "funds", label: "קרנות מחקות", color: false },
 ];
 
 // ── Commodities ───────────────────────────────────────────────────────────
@@ -158,11 +215,11 @@ const FEAR_INDICATORS = [
   { key: "buffett_indicator", label: "Buffett Indicator", desc: "Total Market Cap / GDP · >100% = שוק יקר · currentmarketvaluation.com", type: "plain", manual: true },
   { key: "fear_greed", label: "Fear & Greed Index", desc: "0=פחד קיצוני, 100=חמדנות קיצונית · cnn.com/markets/fear-and-greed", type: "bar", manual: true },
   { key: "yield_10y_us", label: "תשואת 10Y US", desc: "ריבית ארוכה · עולה = לחץ על מניות", type: "plain" },
-  { key: "yield_spread", label: "פער 10Y-2Y US", desc: "שלילי = אזהרת מיתון · fred.stlouisfed.org/series/T10Y2Y", type: "spread", manual: true },
+  { key: "yield_spread", label: "פער 10Y-2Y US", desc: "שלילי = אזהרת מיתון · מחושב אוטומטית מ-FRED", type: "spread" },
   { key: "put_call", label: "Put/Call Ratio", desc: ">1 דובי, <0.7 שורי · cboe.com", type: "plain", manual: true },
   { key: "credit_spread", label: "Credit Spread (HY)", desc: "פער תשואה בין אג״ח זבל לממשלתי · גבוה = סיכון", type: "plain", manual: true },
   { key: "margin_debt", label: "Margin Debt / GDP", desc: "רמת מינוף בשוק · גבוה = סיכון בועה · finra.org", type: "plain", manual: true },
-  { key: "sp500_above_200ma", label: "% מניות מעל MA200", desc: "מעל 70% = שוק חזק, מתחת ל-30% = חולשה", type: "plain", manual: true },
+  { key: "sp500_above_200ma", label: "% מניות מעל MA200", desc: "מעל 70% = שוק חזק, מתחת ל-30% = חולשה · ^SPXA200R", type: "plain" },
   { key: "us_dollar_index", label: "מדד הדולר (DXY)", desc: "דולר חזק = לחץ על שווקים מתפתחים", type: "plain" },
 ];
 

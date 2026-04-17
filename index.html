@@ -148,7 +148,13 @@
       <h2 class="section-title">🏭 ביצועי סקטורים</h2>
       <div class="timestamp" id="ts-sectors">עדכון אחרון: —</div>
     </div>
-    <div class="hint">ביצועי סקטורים נמשכים אוטומטית מ-Yahoo Finance (ETFs) · 🔒 = שדה ידני</div>
+    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      <button class="chip sector-region-btn active" data-region="US" onclick="switchSectorRegion('US',this)">🇺🇸 ארה״ב</button>
+      <button class="chip sector-region-btn" data-region="EU" onclick="switchSectorRegion('EU',this)">🇪🇺 אירופה</button>
+      <button class="chip sector-region-btn" data-region="IL" onclick="switchSectorRegion('IL',this)">🇮🇱 ישראל</button>
+      <button class="chip sector-region-btn" data-region="CN" onclick="switchSectorRegion('CN',this)">🇨🇳 סין</button>
+    </div>
+    <div class="hint">בחר אזור לצפייה בסקטורים · נתונים מ-Yahoo Finance (ETFs) · לחץ על שם סקטור לגרף + קרנות מחקות</div>
     <div class="table-wrap"><table id="sectorsTable"></table></div>
   </div>
 

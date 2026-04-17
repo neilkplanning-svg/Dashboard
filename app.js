@@ -456,16 +456,38 @@ function renderIndices() {
   document.getElementById("ts-indices").textContent = "עדכון אחרון: " + fmtDate(STATE.timestamps.indices);
 }
 
+function switchSectorRegion(region, btn) {
+  SECTOR_ACTIVE_REGION = region;
+  document.querySelectorAll(".sector-region-btn").forEach(b => b.classList.toggle("active", b.dataset.region === region));
+  renderSectors();
+}
+
 function renderSectors() {
-  let html = `<thead><tr><th>סקטור</th>`;
-  SECTOR_FIELDS.forEach(f => html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`);
+  const sectors = getCurrentSectors();
+  const etfs = getCurrentSectorETFs();
+  let html = `<thead><tr><th>��קטור</th>`;
+  SECTOR_FIELDS.forEach(f => {
+    if (f.key === "funds") {
+      html += `<th>${f.label}</th>`;
+    } else {
+      html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`;
+    }
+  });
   html += `</tr></thead><tbody>`;
-  SECTORS.forEach(sec => {
+  sectors.forEach(sec => {
     const sectorName = sec.name;
-    html += `<tr><td class="label">${sectorName}</td>`;
+    const etf = sec.etf || etfs[sectorName];
+    const escapedName = sectorName.replace(/'/g, "\\'");
+    const fundsJson = sec.funds ? JSON.stringify(sec.funds) : 'null';
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${etf}','${escapedName}',${fundsJson});return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות">${sectorName}</a></td>`;
     SECTOR_FIELDS.forEach(f => {
       if (f.key === "region") {
         html += `<td>${sec.region}</td>`;
+      } else if (f.key === "funds") {
+        const fundsList = [];
+        if (sec.funds?.usd?.length) fundsList.push(...sec.funds.usd);
+        if (sec.funds?.ils?.length) fundsList.push(...sec.funds.ils);
+        html += `<td style="font-family:var(--sans);font-size:11px;color:var(--text-faint)">${fundsList.length ? fundsList.join(', ') : '—'}</td>`;
       } else {
         html += `<td>${makeCell("sectors", sectorName, f.key, STATE.sectors[sectorName]?.[f.key], f.color)}</td>`;
       }
