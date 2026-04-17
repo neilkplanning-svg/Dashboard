@@ -78,7 +78,9 @@ async function yahooQuote(symbol) {
     volume: (lastIdx >= 0 && quote.volume[lastIdx]) || meta.regularMarketVolume || 0,
     change_pct: change,
     name: meta.shortName || meta.longName || "",
-    date: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString().slice(0, 10) : ""
+    date: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString().slice(0, 10) : "",
+    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || null,
+    fiftyTwoWeekLow: meta.fiftyTwoWeekLow || null,
   };
 }
 
@@ -279,79 +281,80 @@ async function yahoo12MChange(symbol) {
   return startPrice ? ((price - startPrice) / startPrice * 100) : 0;
 }
 
-// ── Stock Analysis Scraping (free, no API key) ────────────────────────────
+// ── Stock Analysis JSON API (free, no API key, CORS-friendly) ─────────────
 
-async function scrapeStockAnalysis(path) {
-  const url = `${STOCK_ANALYSIS_BASE}${path}`;
+async function fetchSAOverview(type, symbol) {
+  // type: "e" for ETF, "s" for stock
+  const url = `${STOCK_ANALYSIS_BASE}/api/symbol/${type}/${symbol.toLowerCase()}/overview`;
   const resp = await fetchWithProxy(url, 15000);
-  return await resp.text();
-}
-
-function extractNumber(html, pattern) {
-  const match = html.match(pattern);
-  if (!match) return null;
-  const num = match[1].replace(/,/g, '').replace(/[^0-9.\-]/g, '');
-  return parseFloat(num) || null;
-}
-
-function extractText(html, pattern) {
-  const match = html.match(pattern);
-  return match ? match[1].trim() : null;
+  const text = await resp.text();
+  try { return JSON.parse(text); } catch(e) { return null; }
 }
 
 async function fetchETFMetrics(symbol) {
   try {
-    const html = await scrapeStockAnalysis(`/etf/${symbol.toLowerCase()}/`);
-    const pe = extractNumber(html, /P\/E Ratio[^<]*<[^>]*>([0-9,.]+)/i);
-    return { pe };
+    const data = await fetchSAOverview("e", symbol);
+    if (!data || !data.data) return {};
+    const d = data.data;
+    return {
+      pe: d.pe ? parseFloat(d.pe) : null,
+      divYield: d.dividendYield ? parseFloat(d.dividendYield) : null,
+      beta: d.beta ? parseFloat(d.beta) : null,
+      holdings: d.holdingsCount || null,
+      expenseRatio: d.expenseRatio ? parseFloat(d.expenseRatio) : null,
+    };
   } catch(e) { return {}; }
 }
 
 async function fetchStockDetails(symbol) {
   try {
-    const html = await scrapeStockAnalysis(`/stocks/${symbol.toLowerCase()}/`);
+    const data = await fetchSAOverview("s", symbol);
+    if (!data || !data.data) return {};
+    const d = data.data;
     return {
-      pe: extractNumber(html, /P\/E Ratio[^<]*<[^>]*>([0-9,.]+)/i),
-      forwardPE: extractNumber(html, /Forward P\/E[^<]*<[^>]*>([0-9,.]+)/i),
-      eps: extractNumber(html, /EPS \(TTM\)[^<]*<[^>]*>\$?([0-9,.\-]+)/i),
-      marketCap: extractText(html, /Market Cap[^<]*<[^>]*>([^<]+)/i),
-      beta: extractNumber(html, /Beta[^<]*<[^>]*>([0-9,.]+)/i),
-      divYield: extractText(html, /Dividend Yield[^<]*<[^>]*>([^<]+)/i),
-      revenue: extractText(html, /Revenue[^<]*<[^>]*>([^<]+)/i),
-      sharesOut: extractText(html, /Shares Out[^<]*<[^>]*>([^<]+)/i),
+      pe: d.pe ? parseFloat(d.pe) : null,
+      forwardPE: d.forwardPE ? parseFloat(d.forwardPE) : null,
+      eps: d.eps ? parseFloat(d.eps) : null,
+      marketCap: d.marketCap || null,
+      beta: d.beta ? parseFloat(d.beta) : null,
+      divYield: d.dividendYield || null,
+      revenue: d.revenue || null,
+      sharesOut: d.sharesOutstanding || d.shares || null,
+      // Analyst data from overview
+      analystRating: d.analystRating || d.analystConsensus || null,
+      priceTarget: d.analystTarget ? parseFloat(d.analystTarget) : null,
+      analystCount: d.analystCount ? parseInt(d.analystCount) : null,
+      // Ratings breakdown
+      strongBuy: d.strongBuy ? parseInt(d.strongBuy) : null,
+      buy: d.buy ? parseInt(d.buy) : null,
+      hold: d.hold ? parseInt(d.hold) : null,
+      sell: d.sell ? parseInt(d.sell) : null,
+      strongSell: d.strongSell ? parseInt(d.strongSell) : null,
     };
   } catch(e) { return {}; }
 }
 
+// Kept for compatibility — now delegates to fetchStockDetails
 async function fetchStockForecast(symbol) {
-  try {
-    const html = await scrapeStockAnalysis(`/stocks/${symbol.toLowerCase()}/forecast/`);
-    return {
-      analystCount: extractNumber(html, /(\d+)\s*analyst/i),
-      priceTarget: extractNumber(html, /Average[^<]*<[^>]*>\$?([0-9,.]+)/i),
-      targetHigh: extractNumber(html, /High[^<]*<[^>]*>\$?([0-9,.]+)/i),
-      targetLow: extractNumber(html, /Low[^<]*<[^>]*>\$?([0-9,.]+)/i),
-      forwardPE: extractNumber(html, /Forward P\/E[^<]*<[^>]*>([0-9,.]+)/i),
-      strongBuy: extractNumber(html, /Strong Buy[^<]*<[^>]*>(\d+)/i),
-      buy: extractNumber(html, /(?<!Strong\s)Buy[^<]*<[^>]*>(\d+)/i),
-      hold: extractNumber(html, /Hold[^<]*<[^>]*>(\d+)/i),
-      sell: extractNumber(html, /(?<!Strong\s)Sell[^<]*<[^>]*>(\d+)/i),
-      strongSell: extractNumber(html, /Strong Sell[^<]*<[^>]*>(\d+)/i),
-      consensus: extractText(html, /consensus[^"]*rating of ['"]?(\w+)/i),
-    };
-  } catch(e) { return {}; }
+  return fetchStockDetails(symbol);
 }
 
 async function fetchStockCashFlow(symbol) {
+  // Cash flow details aren't in the overview API, try HTML scrape as fallback
   try {
-    const html = await scrapeStockAnalysis(`/stocks/${symbol.toLowerCase()}/financials/cash-flow-statement/`);
+    const url = `${STOCK_ANALYSIS_BASE}/stocks/${symbol.toLowerCase()}/financials/cash-flow-statement/`;
+    const resp = await fetchWithProxy(url, 15000);
+    const text = await resp.text();
+    const extract = (pat) => { const m = text.match(pat); return m ? m[1].trim() : null; };
     return {
-      buybackTTM: extractText(html, /(?:Share Repurchase|Buyback)[^<]*<[^>]*>([^<]+)/i),
-      sbcTTM: extractText(html, /Stock.Based Compensation[^<]*<[^>]*>([^<]+)/i),
-      dividendsPaid: extractText(html, /Dividends Paid[^<]*<[^>]*>([^<]+)/i),
+      buybackTTM: extract(/(?:Share Repurchase|Buyback)[^<]*<[^>]*>([^<]+)/i),
+      sbcTTM: extract(/Stock.Based Compensation[^<]*<[^>]*>([^<]+)/i),
+      dividendsPaid: extract(/Dividends Paid[^<]*<[^>]*>([^<]+)/i),
     };
   } catch(e) { return {}; }
 }
+
+// ── Macro data from Trading Economics (scrape) ────────────────────────────
 
 async function fetchMacroScrape() {
   try {
@@ -374,6 +377,37 @@ async function fetchMacroScrape() {
     }
     return results;
   } catch(e) { console.warn("Macro scrape:", e.message); return {}; }
+}
+
+// ── Macro from individual Trading Economics pages (more reliable) ─────────
+
+async function fetchMacroTE() {
+  const results = {};
+  const pages = [
+    { url: "https://tradingeconomics.com/country-list/interest-rate", field: "interest_rate" },
+    { url: "https://tradingeconomics.com/country-list/inflation-rate", field: "inflation" },
+    { url: "https://tradingeconomics.com/country-list/unemployment-rate", field: "unemployment" },
+  ];
+  const countryNames = {
+    'United States': 'US', 'Euro Area': 'EU', 'Japan': 'JP',
+    'China': 'CN', 'India': 'IN', 'Israel': 'IL'
+  };
+  for (const page of pages) {
+    try {
+      const resp = await fetchWithProxy(page.url, 12000);
+      const text = await resp.text();
+      for (const [name, code] of Object.entries(countryNames)) {
+        if (!results[code]) results[code] = {};
+        // Pattern: country name followed by a number in a table cell
+        const pat = new RegExp(name + '[\\s\\S]{0,300}?<td[^>]*>\\s*([0-9]+\\.?[0-9]*)\\s*<', 'i');
+        const m = text.match(pat);
+        if (m && !results[code][page.field]) {
+          results[code][page.field] = parseFloat(m[1]);
+        }
+      }
+    } catch(e) { console.warn(`TE ${page.field}:`, e.message); }
+  }
+  return results;
 }
 
 async function fetchMultpl() {
@@ -881,11 +915,17 @@ async function fetchAllData() {
     }
   } catch(e) { console.warn("Macro proxies:", e.message); }
 
-  // 10. Scrape macro data from tradingeconomics.com (fills gaps)
+  // 10. Scrape macro data from Trading Economics (try matrix first, then individual pages)
   try {
     showStatus("משלים נתוני מאקרו מ-Trading Economics...", "success");
-    const macroScraped = await fetchMacroScrape();
+    let macroScraped = await fetchMacroScrape();
     let scraped = 0;
+    // Check if matrix worked; if not, try individual pages
+    const hasData = Object.values(macroScraped).some(d => d.interest_rate || d.inflation || d.unemployment);
+    if (!hasData) {
+      console.log("Matrix failed, trying individual TE pages...");
+      macroScraped = await fetchMacroTE();
+    }
     Object.entries(macroScraped).forEach(([region, data]) => {
       if (!STATE.macro[region]) STATE.macro[region] = {};
       if (data.interest_rate && !STATE.macro[region].interest_rate) { STATE.macro[region].interest_rate = data.interest_rate.toFixed(2); scraped++; }
@@ -895,9 +935,9 @@ async function fetchAllData() {
     if (scraped > 0) { updateTimestamp("macro"); successCount++; }
   } catch(e) { console.warn("Macro scrape:", e.message); }
 
-  // 11. Fetch P/E for index ETFs from stockanalysis.com
+  // 11. Fetch P/E for index ETFs via stockanalysis.com JSON API
   try {
-    showStatus("שולף מכפילים למדדים...", "success");
+    showStatus("שולף מכפילים למדדים מ-Stock Analysis...", "success");
     const etfPESymbols = ["SPY", "QQQ", "DIA", "IWM", "VGK", "EWJ", "FXI", "INDA", "EIS", "EEM"];
     for (const sym of etfPESymbols) {
       try {
@@ -1005,24 +1045,28 @@ async function scanStock() {
   const changeClass = q.change_pct >= 0 ? "positive" : "negative";
   const sign = q.change_pct >= 0 ? "+" : "";
 
+  // Merge forecast into details (both come from same API now)
+  const merged = { ...details, ...forecast };
+
   // Analyst section
   let analystHTML = "";
-  if (forecast.analystCount || forecast.priceTarget) {
-    const buyTotal = (forecast.strongBuy || 0) + (forecast.buy || 0);
-    const holdTotal = forecast.hold || 0;
-    const sellTotal = (forecast.sell || 0) + (forecast.strongSell || 0);
+  if (merged.analystCount || merged.priceTarget) {
+    const buyTotal = (merged.strongBuy || 0) + (merged.buy || 0);
+    const holdTotal = merged.hold || 0;
+    const sellTotal = (merged.sell || 0) + (merged.strongSell || 0);
     const total = buyTotal + holdTotal + sellTotal;
-    const consensusEmoji = (forecast.consensus === "Buy" || forecast.consensus === "Strong") ? "🟢" : forecast.consensus === "Hold" ? "🟡" : "⚪";
-    const upside = forecast.priceTarget ? ((forecast.priceTarget - q.price) / q.price * 100).toFixed(1) : null;
+    const rating = merged.analystRating || merged.consensus || "";
+    const consensusEmoji = (rating === "Buy" || rating === "Strong Buy") ? "🟢" : rating === "Hold" ? "🟡" : rating === "Sell" ? "🔴" : "⚪";
+    const upside = merged.priceTarget ? ((merged.priceTarget - q.price) / q.price * 100).toFixed(1) : "";
     analystHTML = `
       <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
         <h4 style="color:var(--accent);margin-bottom:12px">📊 המלצות אנליסטים</h4>
         <div class="scanner-grid">
-          <div class="scanner-item"><span class="scanner-label">קונצנזוס:</span> <span>${consensusEmoji} ${forecast.consensus || "—"}</span></div>
-          <div class="scanner-item"><span class="scanner-label">אנליסטים:</span> <span>${forecast.analystCount || "—"}</span></div>
-          <div class="scanner-item"><span class="scanner-label">יעד ממוצע:</span> <span>$${forecast.priceTarget?.toFixed(2) || "—"}</span></div>
-          <div class="scanner-item"><span class="scanner-label">יעד גבוה:</span> <span>$${forecast.targetHigh?.toFixed(2) || "—"}</span></div>
-          <div class="scanner-item"><span class="scanner-label">יעד נמוך:</span> <span>$${forecast.targetLow?.toFixed(2) || "—"}</span></div>
+          <div class="scanner-item"><span class="scanner-label">קונצנזוס:</span> <span>${consensusEmoji} ${rating || "—"}</span></div>
+          <div class="scanner-item"><span class="scanner-label">אנליסטים:</span> <span>${merged.analystCount || "—"}</span></div>
+          <div class="scanner-item"><span class="scanner-label">יעד ממוצע:</span> <span>$${merged.priceTarget?.toFixed(2) || "—"}</span></div>
+          <div class="scanner-item"><span class="scanner-label">יעד גבוה:</span> <span>$${merged.targetHigh?.toFixed(2) || "—"}</span></div>
+          <div class="scanner-item"><span class="scanner-label">יעד נמוך:</span> <span>$${merged.targetLow?.toFixed(2) || "—"}</span></div>
           <div class="scanner-item"><span class="scanner-label">אפסייד:</span> <span class="${upside > 0 ? 'positive' : 'negative'}">${upside ? upside + "%" : "—"}</span></div>
         </div>
         ${total > 0 ? `<div style="margin-top:8px;display:flex;gap:8px;font-size:11px;align-items:center">
@@ -1039,19 +1083,19 @@ async function scanStock() {
   }
 
   // Fundamentals
-  const pe = details.pe, fpe = details.forwardPE || forecast.forwardPE;
+  const pe = merged.pe, fpe = merged.forwardPE;
   const fundHTML = `
     <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
       <h4 style="color:var(--accent);margin-bottom:12px">📈 נתוני יסוד</h4>
       <div class="scanner-grid">
         <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${pe ? pe.toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${fpe ? fpe.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${details.eps ? "$" + details.eps.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${details.marketCap || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${details.beta?.toFixed(2) || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${details.divYield || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">הכנסות:</span> <span>${details.revenue || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">מניות:</span> <span>${details.sharesOut || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? "$" + merged.eps.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${merged.beta?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${merged.divYield || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">הכנסות:</span> <span>${merged.revenue || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">מניות:</span> <span>${merged.sharesOut || "—"}</span></div>
       </div>
     </div>`;
 
