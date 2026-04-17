@@ -1127,7 +1127,6 @@ async function scanStock() {
     ]);
     // Merge: stockanalysis first, then Bizportal as fallback for Israeli stocks
     details = { ...biz, ...det };
-    // If stockanalysis didn't return PE but Bizportal did, use Bizportal
     if (!details.pe && biz.pe) details.pe = biz.pe;
     if (!details.pb && biz.pb) details.pb = biz.pb;
     if (!details.debtEquity && biz.debtEquity) details.debtEquity = biz.debtEquity;
@@ -1260,6 +1259,7 @@ async function scanStock() {
         <a href="https://finance.yahoo.com/quote/${sym}" target="_blank" class="btn btn-outline">📊 Yahoo Finance</a>
         <a href="https://stockanalysis.com/stocks/${sym.toLowerCase()}/" target="_blank" class="btn btn-outline">📈 Stock Analysis</a>
         <a href="https://finviz.com/quote.ashx?t=${sym}" target="_blank" class="btn btn-outline">📉 Finviz</a>
+        <a href="https://www.google.com/finance/quote/${sym}:NASDAQ" target="_blank" class="btn btn-outline">🔎 Google Finance</a>
         <a href="https://seekingalpha.com/symbol/${sym}" target="_blank" class="btn btn-outline">🔬 Seeking Alpha</a>
         ${sym.includes('.TA') ? `
         <a href="https://www.bizportal.co.il/capitalmarket/quote/generalview/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🇮🇱 Bizportal</a>

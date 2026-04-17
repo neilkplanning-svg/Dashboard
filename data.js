@@ -270,7 +270,7 @@ const WB_INDICATORS = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SCRAPING SOURCES
+// SCRAPING SOURCES (fallback for missing data)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const STOCK_ANALYSIS_BASE = "https://stockanalysis.com";
