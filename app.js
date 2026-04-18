@@ -12,10 +12,17 @@ let STATE = {
   portfolio: [],
   timestamps: {},
   refPoints: {},
-  apiKey: "",
-  tdApiKey: "",
-  fredApiKey: "",
-  authMode: "", // "neil" or "guest"
+  // API keys — indexed by source stateKey
+  apiKey: "",        // FMP
+  tdApiKey: "",      // Twelve Data
+  fredApiKey: "",    // FRED
+  avApiKey: "",      // Alpha Vantage
+  polygonApiKey: "", // Polygon.io
+  iexApiKey: "",     // IEX Cloud
+  nasdaqApiKey: "",  // NASDAQ Data Link
+  refinitivApiKey: "",
+  bloombergApiKey: "",
+  authMode: "",      // "neil" or "guest"
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -67,7 +74,8 @@ function checkAuth() {
 function renderApiSources() {
   const el = document.getElementById("apiSourcesList");
   if (!el) return;
-  el.innerHTML = API_SOURCES.sort((a,b) => b.priority - a.priority).map(s => {
+  // Show priority badges only
+  el.innerHTML = API_SOURCES.filter(s => s.priority > 0).sort((a,b) => b.priority - a.priority).map(s => {
     const hasKey = s.id === "td" ? !!STATE.tdApiKey : s.id === "fmp" ? !!STATE.apiKey : s.id === "fred" ? !!STATE.fredApiKey : true;
     const active = !s.keyRequired || hasKey;
     return `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${active ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.1)'};color:${active ? 'var(--green)' : 'var(--text-ghost)'}">${s.name} ${active ? '✓' : '🔒'}</span>`;
@@ -303,23 +311,81 @@ function switchTab(tabId) {
 }
 
 function toggleApiBar() {
-  document.getElementById("apiBar").classList.toggle("show");
-  document.getElementById("apiKeyInput").value = STATE.apiKey || "";
-  document.getElementById("tdApiKeyInput").value = STATE.tdApiKey || "";
-  document.getElementById("fredApiKeyInput").value = STATE.fredApiKey || "";
+  const bar = document.getElementById("apiBar");
+  const isOpen = bar.classList.toggle("show");
+  if (isOpen) renderApiPanel();
 }
 
 function toggleDataBar() {
   document.getElementById("dataBar").classList.toggle("show");
 }
 
+function renderApiPanel() {
+  const tierMap = { auto: "api-auto-rows", free: "api-free-rows", paid: "api-paid-rows" };
+  // Clear containers
+  Object.values(tierMap).forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ""; });
+
+  API_SOURCES.forEach(s => {
+    const container = document.getElementById(tierMap[s.tier]);
+    if (!container) return;
+    const hasKey = s.stateKey ? !!STATE[s.stateKey] : null;
+    const statusDot = s.tier === "auto"
+      ? `<span class="api-dot api-dot-on" title="פעיל">●</span>`
+      : hasKey
+        ? `<span class="api-dot api-dot-on" title="מוגדר">●</span>`
+        : `<span class="api-dot api-dot-off" title="לא מוגדר">○</span>`;
+
+    const keyInput = s.stateKey
+      ? `<input id="key-${s.id}" class="api-key-input" type="password"
+           value="${STATE[s.stateKey] || ""}"
+           placeholder="${s.placeholder || 'API Key'}"
+           title="${s.placeholder || ''}" />`
+      : `<span style="font-size:11px;color:var(--green);font-weight:600">✓ פעיל ללא מפתח</span>`;
+
+    const signupLink = s.signupUrl
+      ? `<a href="${s.signupUrl}" target="_blank" class="api-signup-link" title="הרשמה / תיעוד">הרשמה ←</a>`
+      : "";
+
+    const docLink = `<a href="${s.url}" target="_blank" class="api-site-link" title="אתר ${s.name}">🔗</a>`;
+
+    container.insertAdjacentHTML("beforeend", `
+      <div class="api-source-row">
+        <div class="api-source-info">
+          ${statusDot}
+          <div>
+            <div class="api-source-name">${s.name} ${docLink}</div>
+            <div class="api-source-desc">${s.desc}</div>
+            <div class="api-source-uses">משמש ל: ${s.uses}</div>
+          </div>
+        </div>
+        <div class="api-source-key">
+          ${keyInput}
+          ${signupLink}
+        </div>
+      </div>`);
+  });
+}
+
 function saveApiKey() {
-  STATE.apiKey = document.getElementById("apiKeyInput").value.trim();
-  STATE.tdApiKey = document.getElementById("tdApiKeyInput").value.trim();
-  STATE.fredApiKey = document.getElementById("fredApiKeyInput").value.trim();
+  // Save all API keys from inputs
+  API_SOURCES.forEach(s => {
+    if (!s.stateKey) return;
+    const inp = document.getElementById("key-" + s.id);
+    if (inp) STATE[s.stateKey] = inp.value.trim();
+  });
   saveState();
   document.getElementById("apiBar").classList.remove("show");
   showStatus("המפתחות נשמרו", "success");
+}
+
+// ── Selective refresh per section ─────────────────────────────────────────
+async function refreshSection(section, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "⏳"; }
+  try {
+    await fetchAllData([section]);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = "🔄"; }
+  }
 }
 
 function fmtDate(d) {

@@ -71,30 +71,47 @@
     </div>
   </div>
   <div id="apiBar" class="api-bar">
-    <div style="width:100%;display:flex;flex-direction:column;gap:8px">
-      <div style="padding:8px 12px;background:rgba(34,197,94,0.1);border-radius:6px;color:var(--green);font-size:12px">
-        ✓ מקורות חינמיים: Yahoo Finance + בנק ישראל + World Bank + Stock Analysis + multpl.com + Trading Economics
+    <div style="width:100%;display:flex;flex-direction:column;gap:0">
+
+      <!-- Tier headers + source rows built dynamically by renderApiPanel() -->
+      <!-- ── ללא מפתח ── -->
+      <div class="api-tier-header">
+        <span class="api-tier-badge api-tier-auto">✓ אוטומטי — ללא מפתח</span>
+        <span style="color:var(--text-ghost);font-size:11px">מקורות אלו פעילים תמיד</span>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="color:var(--text-faint);font-size:12px;min-width:150px">FRED (מאקרו + ריבית + אג״ח):</span>
-        <input id="fredApiKeyInput" placeholder="מפתח חינמי · fred.stlouisfed.org" style="flex:1;min-width:200px;font-size:12px" />
-        <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" style="color:var(--accent);font-size:11px;white-space:nowrap">הרשמה ←</a>
+      <div class="api-sources-grid" id="api-auto-rows">
+        <!-- populated by renderApiPanel -->
       </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="color:var(--text-faint);font-size:12px;min-width:150px">Twelve Data (גיבוי):</span>
-        <input id="tdApiKeyInput" placeholder="אופציונלי" style="flex:1;min-width:200px;font-size:12px" />
+
+      <!-- ── חינמי עם מפתח ── -->
+      <div class="api-tier-header" style="margin-top:12px">
+        <span class="api-tier-badge api-tier-free">🔑 חינמי — דורש מפתח API</span>
+        <span style="color:var(--text-ghost);font-size:11px">הרשמה חינמית, מגביל בקשות</span>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="color:var(--text-faint);font-size:12px;min-width:150px">FMP (סקטורים):</span>
-        <input id="apiKeyInput" placeholder="אופציונלי" style="flex:1;min-width:200px;font-size:12px" />
+      <div class="api-sources-grid" id="api-free-rows">
+        <!-- populated by renderApiPanel -->
       </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-success btn-small" onclick="saveApiKey()">שמור</button>
+
+      <!-- ── בתשלום ── -->
+      <div class="api-tier-header" style="margin-top:12px">
+        <span class="api-tier-badge api-tier-paid">💳 בתשלום</span>
+        <span style="color:var(--text-ghost);font-size:11px">הכנסת מפתח תפעיל אינטגרציה עתידית</span>
+      </div>
+      <div class="api-sources-grid" id="api-paid-rows">
+        <!-- populated by renderApiPanel -->
+      </div>
+
+      <!-- Save / Test -->
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
+        <span style="flex:1;font-size:11px;color:var(--text-ghost);align-self:center">המפתחות נשמרים בדפדפן בלבד · לא נשלחים לשרת</span>
         <button class="btn btn-outline" onclick="testApi()">🧪 בדוק חיבור</button>
+        <button class="btn btn-success btn-small" onclick="saveApiKey()">💾 שמור הכל</button>
       </div>
-      <div style="margin-top:8px;padding:8px 12px;background:var(--bg-deep);border-radius:6px">
-        <span style="color:var(--text-faint);font-size:11px;font-weight:700">תיעדוף מקורות (מהאמין ביותר):</span>
-        <div id="apiSourcesList" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px"></div>
+
+      <!-- Priority list -->
+      <div style="margin-top:8px;padding:6px 10px;background:var(--bg-deep);border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="color:var(--text-faint);font-size:11px;font-weight:700;white-space:nowrap">תיעדוף מקורות:</span>
+        <div id="apiSourcesList" style="display:flex;flex-wrap:wrap;gap:4px"></div>
       </div>
     </div>
   </div>
@@ -126,7 +143,10 @@
   <div id="panel-macro" class="tab-panel active">
     <div class="section-header">
       <h2 class="section-title">🌍 נתוני מאקרו גלובליים</h2>
-      <div class="timestamp" id="ts-macro">עדכון אחרון: —</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="timestamp" id="ts-macro">עדכון אחרון: —</div>
+        <button class="refresh-btn" data-refresh="macro" onclick="refreshSection('macro',this)" title="רענן מאקרו בלבד">🔄</button>
+      </div>
     </div>
     <div class="hint">נתונים מ-World Bank + FRED + Trading Economics · לחץ על כל תא לעריכה</div>
     <div class="table-wrap"><table id="macroTable"></table></div>
@@ -136,9 +156,12 @@
   <div id="panel-indices" class="tab-panel">
     <div class="section-header">
       <h2 class="section-title">📊 מדדים מובילים — מכפילים והערכות שווי</h2>
-      <div class="timestamp" id="ts-indices">עדכון אחרון: —</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="timestamp" id="ts-indices">עדכון אחרון: —</div>
+        <button class="refresh-btn" data-refresh="indices" onclick="refreshSection('indices',this)" title="רענן מדדים בלבד">🔄</button>
+      </div>
     </div>
-    <div class="hint">לחץ על שם מדד לגרף + קרנות מחקות · 🔒 = שדה ידני · P/E מ-stockanalysis.com</div>
+    <div class="hint">לחץ על שם מדד לגרף + קרנות מחקות · 🔒 = שדה ידני · P/E מ-Yahoo Finance + Stock Analysis</div>
     <div class="table-wrap"><table id="indicesTable"></table></div>
   </div>
 
@@ -146,7 +169,10 @@
   <div id="panel-sectors" class="tab-panel">
     <div class="section-header">
       <h2 class="section-title">🏭 ביצועי סקטורים</h2>
-      <div class="timestamp" id="ts-sectors">עדכון אחרון: —</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="timestamp" id="ts-sectors">עדכון אחרון: —</div>
+        <button class="refresh-btn" data-refresh="sectors" onclick="refreshSection('sectors',this)" title="רענן סקטורים בלבד">🔄</button>
+      </div>
     </div>
     <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
       <button class="chip sector-region-btn active" data-region="US" onclick="switchSectorRegion('US',this)">🇺🇸 ארה״ב</button>
@@ -162,13 +188,19 @@
   <div id="panel-commodities" class="tab-panel">
     <div class="section-header">
       <h2 class="section-title">🛢️ סחורות</h2>
-      <div class="timestamp" id="ts-commodities">עדכון אחרון: —</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="timestamp" id="ts-commodities">עדכון אחרון: —</div>
+        <button class="refresh-btn" data-refresh="commodities" onclick="refreshSection('commodities',this)" title="רענן סחורות בלבד">🔄</button>
+      </div>
     </div>
     <div class="hint">לחץ על שם סחורה לגרף היסטורי</div>
     <div class="table-wrap"><table id="commoditiesTable"></table></div>
     <div class="section-header" style="margin-top:32px">
       <h2 class="section-title">💱 מטבעות מול ₪</h2>
-      <div class="timestamp" id="ts-currencies">עדכון אחרון: —</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="timestamp" id="ts-currencies">עדכון אחרון: —</div>
+        <button class="refresh-btn" data-refresh="currencies" onclick="refreshSection('currencies',this)" title="רענן מטבעות בלבד">🔄</button>
+      </div>
     </div>
     <div class="hint">לחץ על שם מטבע לגרף היסטורי</div>
     <div class="table-wrap"><table id="currenciesTable"></table></div>
@@ -178,7 +210,10 @@
   <div id="panel-fear" class="tab-panel">
     <div class="section-header">
       <h2 class="section-title">😰 מדדי פחד וסנטימנט — Buffett Dashboard</h2>
-      <div class="timestamp" id="ts-fear">עדכון אחרון: —</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="timestamp" id="ts-fear">עדכון אחרון: —</div>
+        <button class="refresh-btn" data-refresh="fear" onclick="refreshSection('fear',this)" title="רענן מדדי פחד בלבד">🔄</button>
+      </div>
     </div>
     <div class="hint">מדדים שוורן באפט עוקב אחריהם: VIX, Buffett Indicator, תשואות אג״ח, מינוף שוק, Fear & Greed</div>
     <div class="fear-grid" id="fearGrid"></div>

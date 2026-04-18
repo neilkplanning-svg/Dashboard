@@ -281,7 +281,34 @@ async function yahoo12MChange(symbol) {
   return startPrice ? ((price - startPrice) / startPrice * 100) : 0;
 }
 
-// ── Yahoo Finance quoteSummary — P/E, Forward P/E (free via proxy) ──────────
+// ── Yahoo Finance v7 quote — simpler, more reliable for P/E through proxies ──
+
+async function yahooQuoteV7(symbol) {
+  // v7 quote endpoint — no crumb needed for most proxies, lots of fields
+  try {
+    const fields = "trailingPE,forwardPE,marketCap,priceToBook,epsTrailingTwelveMonths,beta,trailingAnnualDividendYield,dividendYield,longName,shortName,regularMarketPrice";
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${fields}`;
+    const resp = await fetchWithProxy(url, 12000);
+    const text = await resp.text();
+    const json = JSON.parse(text);
+    const r = json.quoteResponse?.result?.[0];
+    if (!r) return null;
+    const dy = r.dividendYield ?? r.trailingAnnualDividendYield;
+    return {
+      pe:        r.trailingPE ?? null,
+      forwardPE: r.forwardPE ?? null,
+      eps:       r.epsTrailingTwelveMonths ?? null,
+      marketCap: r.marketCap ?? null,
+      beta:      r.beta ?? null,
+      pb:        r.priceToBook ?? null,
+      debtEquity: null, // not in v7
+      divYield:  dy != null ? (dy * 100).toFixed(2) + "%" : null,
+      name:      r.longName || r.shortName || null,
+    };
+  } catch(e) { return null; }
+}
+
+// ── Yahoo Finance v10 quoteSummary — richer but often 401 without crumb ─────
 
 async function yahooQuoteSummary(symbol) {
   // Returns trailingPE, forwardPE, marketCap, beta, eps, priceToBook, debtToEquity
@@ -310,6 +337,25 @@ async function yahooQuoteSummary(symbol) {
   } catch(e) { return null; }
 }
 
+// Smart combiner: v7 first (reliable), v10 to fill gaps (debtEquity etc.)
+async function yahooMetrics(symbol) {
+  const v7 = await yahooQuoteV7(symbol);
+  // If v7 gave PE we're mostly good — still try v10 for debtEquity if missing
+  if (v7 && v7.pe) {
+    if (!v7.debtEquity) {
+      const v10 = await yahooQuoteSummary(symbol).catch(() => null);
+      if (v10) {
+        v7.debtEquity = v10.debtEquity;
+        v7.pb = v7.pb || v10.pb;
+      }
+    }
+    return v7;
+  }
+  // v7 failed entirely — try v10
+  const v10 = await yahooQuoteSummary(symbol).catch(() => null);
+  return v10 || v7 || null;
+}
+
 // ── Stock Analysis JSON API (free, no API key, CORS-friendly) ─────────────
 
 async function fetchSAOverview(type, symbol) {
@@ -321,57 +367,57 @@ async function fetchSAOverview(type, symbol) {
 }
 
 async function fetchETFMetrics(symbol) {
-  // Primary: Yahoo quoteSummary (most reliable)
+  // Primary: Yahoo v7 (reliable) → v10 fallback
   try {
-    const ys = await yahooQuoteSummary(symbol);
-    if (ys && ys.pe) return { pe: ys.pe, forwardPE: ys.forwardPE, beta: ys.beta, divYield: ys.divYield };
+    const ys = await yahooMetrics(symbol);
+    if (ys && ys.pe) return { pe: ys.pe, forwardPE: ys.forwardPE, beta: ys.beta, divYield: ys.divYield, pb: ys.pb };
   } catch(e) {}
-  // Fallback: stockanalysis.com
+  // Fallback: stockanalysis.com — try many field name variants
   try {
     const data = await fetchSAOverview("e", symbol);
-    if (!data || !data.data) return {};
-    const d = data.data;
-    // SA returns values as strings like "28.50x" — strip non-numeric suffix
-    const saNum = v => v ? parseFloat(String(v).replace(/[^0-9.-]/g, "")) : null;
+    const d = data?.data || data;
+    if (!d) return {};
+    const saNum = v => v == null ? null : parseFloat(String(v).replace(/[^0-9.-]/g, "")) || null;
     return {
-      pe: saNum(d.pe) || saNum(d.priceEarnings) || null,
-      forwardPE: saNum(d.forwardPE) || null,
-      divYield: d.dividendYield || null,
-      beta: saNum(d.beta) || null,
-      holdings: d.holdingsCount || null,
+      pe:         saNum(d.peRatio) || saNum(d.pe) || saNum(d.priceEarnings) || saNum(d.trailingPE) || null,
+      forwardPE:  saNum(d.forwardPE) || saNum(d.forwardPeRatio) || null,
+      divYield:   d.dividendYield || d.divYield || null,
+      beta:       saNum(d.beta) || null,
+      pb:         saNum(d.pb) || saNum(d.priceToBook) || null,
+      holdings:   d.holdingsCount || d.holdings || null,
       expenseRatio: saNum(d.expenseRatio) || null,
     };
   } catch(e) { return {}; }
 }
 
 async function fetchStockDetails(symbol) {
-  // Primary: Yahoo quoteSummary
+  // Primary: Yahoo v7 + v10 combined
   let yData = {};
   try {
-    const ys = await yahooQuoteSummary(symbol);
+    const ys = await yahooMetrics(symbol);
     if (ys) yData = ys;
   } catch(e) {}
 
-  // Secondary: stockanalysis.com
+  // Secondary: stockanalysis.com (lenient field-name matching)
   let saData = {};
   try {
     const data = await fetchSAOverview("s", symbol);
-    if (data?.data) {
-      const d = data.data;
-      const saNum = v => v ? parseFloat(String(v).replace(/[^0-9.-]/g, "")) : null;
+    const d = data?.data || data;
+    if (d && typeof d === "object") {
+      const saNum = v => v == null ? null : parseFloat(String(v).replace(/[^0-9.-]/g, "")) || null;
       saData = {
-        pe:          saNum(d.pe) || null,
-        forwardPE:   saNum(d.forwardPE) || null,
-        eps:         saNum(d.eps) || null,
-        marketCap:   d.marketCap || null,
+        pe:          saNum(d.peRatio) || saNum(d.pe) || saNum(d.trailingPE) || null,
+        forwardPE:   saNum(d.forwardPE) || saNum(d.forwardPeRatio) || null,
+        eps:         saNum(d.eps) || saNum(d.epsTrailing) || null,
+        marketCap:   d.marketCap || d.marketCapFormatted || null,
         beta:        saNum(d.beta) || null,
-        pb:          saNum(d.pb) || saNum(d.priceToBook) || null,
-        debtEquity:  saNum(d.debtEquity) || saNum(d.debtToEquity) || null,
-        divYield:    d.dividendYield || null,
+        pb:          saNum(d.pb) || saNum(d.priceToBook) || saNum(d.pbRatio) || null,
+        debtEquity:  saNum(d.debtEquity) || saNum(d.debtToEquity) || saNum(d.deRatio) || null,
+        divYield:    d.dividendYield || d.divYield || null,
         revenue:     d.revenue || null,
         sharesOut:   d.sharesOutstanding || d.shares || null,
-        analystRating: d.analystRating || d.analystConsensus || null,
-        priceTarget: saNum(d.analystTarget) || null,
+        analystRating: d.analystRating || d.analystConsensus || d.consensus || null,
+        priceTarget: saNum(d.analystTarget) || saNum(d.priceTarget) || null,
         analystCount: d.analystCount ? parseInt(d.analystCount) : null,
         strongBuy:   d.strongBuy ? parseInt(d.strongBuy) : null,
         buy:         d.buy ? parseInt(d.buy) : null,
@@ -576,27 +622,39 @@ async function testApi() {
 
 // ── Fetch All Data ──────────────────────────────────────────────────────────
 
-async function fetchAllData() {
-  document.getElementById("loadingOverlay").classList.remove("hidden");
-  document.getElementById("fetchBtn").disabled = true;
+// only: null/undefined = all sections, or array e.g. ["indices","fear"]
+async function fetchAllData(only) {
+  const has = (s) => !only || only.includes(s);
+  const isPartial = !!only;
+
+  if (!isPartial) {
+    document.getElementById("loadingOverlay").classList.remove("hidden");
+    document.getElementById("fetchBtn").disabled = true;
+  }
   let successCount = 0;
   const errors = [];
 
-  // Build Yahoo symbol list
+  // Build Yahoo symbol list — include only what's needed
   const yahooSymbols = [];
   const yahooMap = {};
-  INDICES.forEach(i => { yahooSymbols.push(i.sym); yahooMap[i.sym] = { cat: "indices", key: i.key }; });
-  COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
-  yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
-  yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
-  yahooSymbols.push("DX-Y.NYB"); yahooMap["DX-Y.NYB"] = { cat: "fear", key: "us_dollar_index" };
-  STATE.portfolio.forEach(s => {
-    const sym = s.symbol.toUpperCase();
-    if (!yahooMap[sym]) {
-      yahooSymbols.push(sym);
-      yahooMap[sym] = { cat: "portfolio", key: s.symbol };
-    }
-  });
+  if (has("indices") || has("macro"))
+    INDICES.forEach(i => { yahooSymbols.push(i.sym); yahooMap[i.sym] = { cat: "indices", key: i.key }; });
+  if (has("commodities"))
+    COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
+  if (has("fear") || has("macro")) {
+    yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
+    yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
+    yahooSymbols.push("DX-Y.NYB"); yahooMap["DX-Y.NYB"] = { cat: "fear", key: "us_dollar_index" };
+  }
+  if (has("portfolio") || !isPartial) {
+    STATE.portfolio.forEach(s => {
+      const sym = s.symbol.toUpperCase();
+      if (!yahooMap[sym]) {
+        yahooSymbols.push(sym);
+        yahooMap[sym] = { cat: "portfolio", key: s.symbol };
+      }
+    });
+  }
 
   // 1. Try Yahoo Finance (primary)
   let yahooWorked = false;
@@ -656,7 +714,7 @@ async function fetchAllData() {
   }
 
   // 1b. Fetch 10Y high/low and YTD for indices
-  if (yahooWorked) {
+  if (has("indices") && yahooWorked) {
     try {
       showStatus("שולף נתוני 10Y שיא/שפל + שינוי מתחילת שנה...", "success");
       for (const idx of INDICES) {
@@ -689,7 +747,7 @@ async function fetchAllData() {
   }
 
   // 1c. Fetch YTD and 12M change for sector ETFs
-  if (yahooWorked) {
+  if (has("sectors") && yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
       // Use all regions' sectors for historical data
@@ -716,7 +774,7 @@ async function fetchAllData() {
   }
 
   // 1d. Fetch YTD and 12M change for commodities
-  if (yahooWorked) {
+  if (has("commodities") && yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסחורות...", "success");
       for (const c of COMMODITIES) {
@@ -788,6 +846,7 @@ async function fetchAllData() {
   }
 
   // 3. FOREX — All currencies normalized to ILS
+  if (!has("currencies")) { /* skip */ } else
   try {
     showStatus("שולף שערי מטבעות מול שקל...", "success");
     // First fetch all needed Yahoo symbols
@@ -846,6 +905,7 @@ async function fetchAllData() {
   } catch(e) { errors.push("מט״ח: " + e.message); }
 
   // 4. SECTORS via Yahoo Finance — fetch ALL regions' ETFs at once
+  if (!has("sectors")) { /* skip */ } else
   try {
     showStatus("שולף ביצועי סקטורים מ-Yahoo Finance...", "success");
     // Collect all unique ETF symbols from all regions
@@ -897,6 +957,7 @@ async function fetchAllData() {
   }
 
   // 5. BOI — Bank of Israel representative exchange rates (שער יציג)
+  if (!has("currencies") && !has("macro")) { /* skip */ } else
   try {
     showStatus("שולף שערי יציג מבנק ישראל...", "success");
     const boiRates = await fetchBOI();
@@ -941,6 +1002,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("BOI:", e.message); }
 
   // 6. World Bank — Macro data: GDP, inflation, unemployment (free, no key)
+  if (!has("macro")) { /* skip */ } else
   try {
     showStatus("שולף נתוני מאקרו מ-World Bank...", "success");
     const wb = await fetchWorldBank();
@@ -956,7 +1018,7 @@ async function fetchAllData() {
   } catch(e) { errors.push("World Bank: " + e.message); }
 
   // 7. FRED — Macro data override with more current data (optional, needs key)
-  if (STATE.fredApiKey) {
+  if (has("macro") && STATE.fredApiKey) {
     try {
       showStatus("שולף נתוני מאקרו מ-FRED...", "success");
       const fred = await fetchAllFRED();
@@ -1012,7 +1074,7 @@ async function fetchAllData() {
   }
 
   // 8. FRED — 10Y Bond yields (optional, needs key)
-  if (STATE.fredApiKey) {
+  if (has("macro") && STATE.fredApiKey) {
     try {
       showStatus("שולף תשואות אג״ח 10Y מ-FRED...", "success");
       const bonds = await fetchFREDBonds();
@@ -1027,6 +1089,7 @@ async function fetchAllData() {
   }
 
   // 9. Fill missing macro fields via Yahoo Finance proxies
+  if (!has("macro")) { /* skip */ } else
   try {
     showStatus("משלים נתוני מאקרו חסרים...", "success");
     // Bond ETFs as proxies for 10Y yields when FRED is unavailable
@@ -1051,6 +1114,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("Macro proxies:", e.message); }
 
   // 10. Scrape macro data from Trading Economics (try matrix first, then individual pages)
+  if (!has("macro")) { /* skip */ } else
   try {
     showStatus("משלים נתוני מאקרו מ-Trading Economics...", "success");
     let macroScraped = await fetchMacroScrape();
@@ -1071,6 +1135,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("Macro scrape:", e.message); }
 
   // 11. Fetch P/E for index ETFs — Yahoo quoteSummary (primary) + stockanalysis fallback
+  if (!has("indices")) { /* skip */ } else
   try {
     showStatus("שולף מכפילים למדדים...", "success");
     const etfPEList = INDICES.filter(i => i.sa && i.saType === "e");
@@ -1090,6 +1155,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("ETF P/E:", e.message); }
 
   // 11b. Fetch P/E for SECTOR ETFs
+  if (!has("sectors")) { /* skip */ } else
   try {
     showStatus("שולף P/E לסקטורים...", "success");
     const allSectorList = [];
@@ -1112,7 +1178,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("Sector P/E:", e.message); }
 
   // 12. FRED — Yield Spread 10Y-2Y (auto-calc for fear screen)
-  if (STATE.fredApiKey) {
+  if (has("fear") && STATE.fredApiKey) {
     try {
       showStatus("מחשב פער עקום תשואות 10Y-2Y...", "success");
       const [dgs10, dgs2] = await Promise.all([
@@ -1129,6 +1195,7 @@ async function fetchAllData() {
   }
 
   // 12b. Fetch % S&P500 stocks above 200-day MA (via Yahoo: ^SPXA200R)
+  if (!has("fear")) { /* skip */ } else
   try {
     showStatus("שולף % מניות מעל ממוצע 200 יום...", "success");
     const ma200q = await yahooQuote("^SPXA200R").catch(() => null);
@@ -1140,6 +1207,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("MA200:", e.message); }
 
   // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
+  if (!has("indices")) { /* skip */ } else
   try {
     showStatus("שולף Shiller CAPE ומכפילים...", "success");
     const multpl = await fetchMultpl();
@@ -1155,20 +1223,25 @@ async function fetchAllData() {
   } catch(e) { console.warn("multpl:", e.message); }
 
   saveState();
-  renderAll();
-
-  document.getElementById("loadingOverlay").classList.add("hidden");
-  document.getElementById("fetchBtn").disabled = false;
-
-  const proxyLabel = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "";
-  if (successCount === 0) {
-    showStatus(`✕ נכשל: ${errors.join(" | ")}`, "error");
-  } else if (errors.length === 0) {
-    showStatus(`✓ ${successCount} קטגוריות עודכנו בהצלחה ${proxyLabel ? `[${proxyLabel}]` : ""}`, "success");
+  if (isPartial) {
+    // Render only the changed sections
+    only.forEach(s => renderSection(s));
+    const label = only.map(s => ({ macro:"מאקרו", indices:"מדדים", sectors:"סקטורים", commodities:"סחורות", currencies:"מטבעות", fear:"פחד", portfolio:"תיק" }[s] || s)).join(", ");
+    showStatus(`✓ ${label} עודכן${only.length > 1 ? "ו" : ""}`, "success");
   } else {
-    showStatus(`✓ עודכנו ${successCount}. חסרים: ${errors.join(", ")}`, "success");
+    renderAll();
+    document.getElementById("loadingOverlay").classList.add("hidden");
+    document.getElementById("fetchBtn").disabled = false;
+    const proxyLabel = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "";
+    if (successCount === 0) {
+      showStatus(`✕ נכשל: ${errors.join(" | ")}`, "error");
+    } else if (errors.length === 0) {
+      showStatus(`✓ ${successCount} קטגוריות עודכנו בהצלחה ${proxyLabel ? `[${proxyLabel}]` : ""}`, "success");
+    } else {
+      showStatus(`✓ עודכנו ${successCount}. חסרים: ${errors.join(", ")}`, "success");
+    }
   }
-  console.log("Fetch result:", { success: successCount, errors, yahooWorked, proxy: _workingProxy });
+  console.log("Fetch result:", { only, success: successCount, errors, proxy: _workingProxy });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1279,19 +1352,20 @@ async function scanStock() {
       </div>`;
   }
 
-  // Fundamentals
+  // Fundamentals — defensive number formatting (accepts strings too)
+  const n2 = v => { const x = parseFloat(v); return isNaN(x) ? "—" : x.toFixed(2); };
   const pe = merged.pe, fpe = merged.forwardPE;
   const fundHTML = `
     <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
       <h4 style="color:var(--accent);margin-bottom:12px">📈 נתוני יסוד</h4>
       <div class="scanner-grid">
-        <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${pe ? pe.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${fpe ? fpe.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${merged.pb ? merged.pb.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${merged.debtEquity ? merged.debtEquity.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? (sym.includes('.TA') ? '₪' : '$') + merged.eps.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${n2(pe)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${n2(fpe)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${n2(merged.pb)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${n2(merged.debtEquity)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps != null && !isNaN(parseFloat(merged.eps)) ? (sym.includes('.TA') ? '₪' : '$') + parseFloat(merged.eps).toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${merged.beta?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${n2(merged.beta)}</span></div>
         <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${merged.divYield || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">הכנסות:</span> <span>${merged.revenue || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">מניות:</span> <span>${merged.sharesOut || "—"}</span></div>
