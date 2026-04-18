@@ -281,7 +281,34 @@ async function yahoo12MChange(symbol) {
   return startPrice ? ((price - startPrice) / startPrice * 100) : 0;
 }
 
-// ── Yahoo Finance quoteSummary — P/E, Forward P/E (free via proxy) ──────────
+// ── Yahoo Finance v7 quote — simpler, more reliable for P/E through proxies ──
+
+async function yahooQuoteV7(symbol) {
+  // v7 quote endpoint — no crumb needed for most proxies, lots of fields
+  try {
+    const fields = "trailingPE,forwardPE,marketCap,priceToBook,epsTrailingTwelveMonths,beta,trailingAnnualDividendYield,dividendYield,longName,shortName,regularMarketPrice";
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${fields}`;
+    const resp = await fetchWithProxy(url, 12000);
+    const text = await resp.text();
+    const json = JSON.parse(text);
+    const r = json.quoteResponse?.result?.[0];
+    if (!r) return null;
+    const dy = r.dividendYield ?? r.trailingAnnualDividendYield;
+    return {
+      pe:        r.trailingPE ?? null,
+      forwardPE: r.forwardPE ?? null,
+      eps:       r.epsTrailingTwelveMonths ?? null,
+      marketCap: r.marketCap ?? null,
+      beta:      r.beta ?? null,
+      pb:        r.priceToBook ?? null,
+      debtEquity: null, // not in v7
+      divYield:  dy != null ? (dy * 100).toFixed(2) + "%" : null,
+      name:      r.longName || r.shortName || null,
+    };
+  } catch(e) { return null; }
+}
+
+// ── Yahoo Finance v10 quoteSummary — richer but often 401 without crumb ─────
 
 async function yahooQuoteSummary(symbol) {
   // Returns trailingPE, forwardPE, marketCap, beta, eps, priceToBook, debtToEquity
@@ -310,6 +337,25 @@ async function yahooQuoteSummary(symbol) {
   } catch(e) { return null; }
 }
 
+// Smart combiner: v7 first (reliable), v10 to fill gaps (debtEquity etc.)
+async function yahooMetrics(symbol) {
+  const v7 = await yahooQuoteV7(symbol);
+  // If v7 gave PE we're mostly good — still try v10 for debtEquity if missing
+  if (v7 && v7.pe) {
+    if (!v7.debtEquity) {
+      const v10 = await yahooQuoteSummary(symbol).catch(() => null);
+      if (v10) {
+        v7.debtEquity = v10.debtEquity;
+        v7.pb = v7.pb || v10.pb;
+      }
+    }
+    return v7;
+  }
+  // v7 failed entirely — try v10
+  const v10 = await yahooQuoteSummary(symbol).catch(() => null);
+  return v10 || v7 || null;
+}
+
 // ── Stock Analysis JSON API (free, no API key, CORS-friendly) ─────────────
 
 async function fetchSAOverview(type, symbol) {
@@ -321,57 +367,57 @@ async function fetchSAOverview(type, symbol) {
 }
 
 async function fetchETFMetrics(symbol) {
-  // Primary: Yahoo quoteSummary (most reliable)
+  // Primary: Yahoo v7 (reliable) → v10 fallback
   try {
-    const ys = await yahooQuoteSummary(symbol);
-    if (ys && ys.pe) return { pe: ys.pe, forwardPE: ys.forwardPE, beta: ys.beta, divYield: ys.divYield };
+    const ys = await yahooMetrics(symbol);
+    if (ys && ys.pe) return { pe: ys.pe, forwardPE: ys.forwardPE, beta: ys.beta, divYield: ys.divYield, pb: ys.pb };
   } catch(e) {}
-  // Fallback: stockanalysis.com
+  // Fallback: stockanalysis.com — try many field name variants
   try {
     const data = await fetchSAOverview("e", symbol);
-    if (!data || !data.data) return {};
-    const d = data.data;
-    // SA returns values as strings like "28.50x" — strip non-numeric suffix
-    const saNum = v => v ? parseFloat(String(v).replace(/[^0-9.-]/g, "")) : null;
+    const d = data?.data || data;
+    if (!d) return {};
+    const saNum = v => v == null ? null : parseFloat(String(v).replace(/[^0-9.-]/g, "")) || null;
     return {
-      pe: saNum(d.pe) || saNum(d.priceEarnings) || null,
-      forwardPE: saNum(d.forwardPE) || null,
-      divYield: d.dividendYield || null,
-      beta: saNum(d.beta) || null,
-      holdings: d.holdingsCount || null,
+      pe:         saNum(d.peRatio) || saNum(d.pe) || saNum(d.priceEarnings) || saNum(d.trailingPE) || null,
+      forwardPE:  saNum(d.forwardPE) || saNum(d.forwardPeRatio) || null,
+      divYield:   d.dividendYield || d.divYield || null,
+      beta:       saNum(d.beta) || null,
+      pb:         saNum(d.pb) || saNum(d.priceToBook) || null,
+      holdings:   d.holdingsCount || d.holdings || null,
       expenseRatio: saNum(d.expenseRatio) || null,
     };
   } catch(e) { return {}; }
 }
 
 async function fetchStockDetails(symbol) {
-  // Primary: Yahoo quoteSummary
+  // Primary: Yahoo v7 + v10 combined
   let yData = {};
   try {
-    const ys = await yahooQuoteSummary(symbol);
+    const ys = await yahooMetrics(symbol);
     if (ys) yData = ys;
   } catch(e) {}
 
-  // Secondary: stockanalysis.com
+  // Secondary: stockanalysis.com (lenient field-name matching)
   let saData = {};
   try {
     const data = await fetchSAOverview("s", symbol);
-    if (data?.data) {
-      const d = data.data;
-      const saNum = v => v ? parseFloat(String(v).replace(/[^0-9.-]/g, "")) : null;
+    const d = data?.data || data;
+    if (d && typeof d === "object") {
+      const saNum = v => v == null ? null : parseFloat(String(v).replace(/[^0-9.-]/g, "")) || null;
       saData = {
-        pe:          saNum(d.pe) || null,
-        forwardPE:   saNum(d.forwardPE) || null,
-        eps:         saNum(d.eps) || null,
-        marketCap:   d.marketCap || null,
+        pe:          saNum(d.peRatio) || saNum(d.pe) || saNum(d.trailingPE) || null,
+        forwardPE:   saNum(d.forwardPE) || saNum(d.forwardPeRatio) || null,
+        eps:         saNum(d.eps) || saNum(d.epsTrailing) || null,
+        marketCap:   d.marketCap || d.marketCapFormatted || null,
         beta:        saNum(d.beta) || null,
-        pb:          saNum(d.pb) || saNum(d.priceToBook) || null,
-        debtEquity:  saNum(d.debtEquity) || saNum(d.debtToEquity) || null,
-        divYield:    d.dividendYield || null,
+        pb:          saNum(d.pb) || saNum(d.priceToBook) || saNum(d.pbRatio) || null,
+        debtEquity:  saNum(d.debtEquity) || saNum(d.debtToEquity) || saNum(d.deRatio) || null,
+        divYield:    d.dividendYield || d.divYield || null,
         revenue:     d.revenue || null,
         sharesOut:   d.sharesOutstanding || d.shares || null,
-        analystRating: d.analystRating || d.analystConsensus || null,
-        priceTarget: saNum(d.analystTarget) || null,
+        analystRating: d.analystRating || d.analystConsensus || d.consensus || null,
+        priceTarget: saNum(d.analystTarget) || saNum(d.priceTarget) || null,
         analystCount: d.analystCount ? parseInt(d.analystCount) : null,
         strongBuy:   d.strongBuy ? parseInt(d.strongBuy) : null,
         buy:         d.buy ? parseInt(d.buy) : null,
@@ -1306,19 +1352,20 @@ async function scanStock() {
       </div>`;
   }
 
-  // Fundamentals
+  // Fundamentals — defensive number formatting (accepts strings too)
+  const n2 = v => { const x = parseFloat(v); return isNaN(x) ? "—" : x.toFixed(2); };
   const pe = merged.pe, fpe = merged.forwardPE;
   const fundHTML = `
     <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
       <h4 style="color:var(--accent);margin-bottom:12px">📈 נתוני יסוד</h4>
       <div class="scanner-grid">
-        <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${pe ? pe.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${fpe ? fpe.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${merged.pb ? merged.pb.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${merged.debtEquity ? merged.debtEquity.toFixed(2) : "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps ? (sym.includes('.TA') ? '₪' : '$') + merged.eps.toFixed(2) : "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${n2(pe)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${n2(fpe)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${n2(merged.pb)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${n2(merged.debtEquity)}</span></div>
+        <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps != null && !isNaN(parseFloat(merged.eps)) ? (sym.includes('.TA') ? '₪' : '$') + parseFloat(merged.eps).toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
-        <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${merged.beta?.toFixed(2) || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${n2(merged.beta)}</span></div>
         <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${merged.divYield || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">הכנסות:</span> <span>${merged.revenue || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">מניות:</span> <span>${merged.sharesOut || "—"}</span></div>
