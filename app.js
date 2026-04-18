@@ -81,7 +81,7 @@ function renderApiSources() {
 let _chartSymbol = null;
 let _chartName = null;
 
-function openChart(symbol, name, funds) {
+function openChart(symbol, name, fundsOrKey) {
   _chartSymbol = symbol;
   _chartName = name;
   document.getElementById("chartTitle").textContent = name;
@@ -89,6 +89,21 @@ function openChart(symbol, name, funds) {
   // Reset range buttons
   document.querySelectorAll(".chart-range").forEach(b => b.classList.toggle("active", b.dataset.range === "1y"));
   loadChart(symbol, "1y");
+
+  // Resolve funds: if string key → look up INDEX_FUNDS; if object → use directly
+  let funds = null;
+  if (typeof fundsOrKey === "string" && fundsOrKey) {
+    funds = (typeof INDEX_FUNDS !== "undefined" && INDEX_FUNDS[fundsOrKey]) || null;
+    // Also check sector funds
+    if (!funds) {
+      Object.values(SECTOR_REGIONS || {}).forEach(r => {
+        r.sectors.forEach(s => { if (s.etf === symbol || s.name === fundsOrKey) funds = s.funds; });
+      });
+    }
+  } else if (fundsOrKey && typeof fundsOrKey === "object") {
+    funds = fundsOrKey;
+  }
+
   // Show tracking funds
   const fundsEl = document.getElementById("chartFunds");
   if (funds && (funds.usd?.length || funds.ils?.length)) {
@@ -99,6 +114,11 @@ function openChart(symbol, name, funds) {
   } else {
     fundsEl.innerHTML = '';
   }
+}
+
+function openChartSector(etf, name) {
+  const funds = window._sectorFunds?.[etf] || null;
+  openChart(etf, name, funds);
 }
 
 function closeChart(e) {
@@ -425,9 +445,9 @@ function renderIndices() {
   html += `<th>📌 רפרנס</th>`;
   html += `</tr></thead><tbody>`;
   INDICES.forEach(idx => {
-    const funds = typeof INDEX_FUNDS !== 'undefined' ? INDEX_FUNDS[idx.key] : null;
-    const escapedName = idx.name.replace(/'/g, "\\'");
-    html += `<tr><td class="label"><a href="#" onclick="openChart('${idx.sym}','${escapedName}',${JSON.stringify(funds)});return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות מחקות">${idx.name}</a></td><td>${idx.region}</td>`;
+    const escapedName = idx.name.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    // Pass index key — openChart will look up INDEX_FUNDS internally (avoids JSON in onclick)
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${idx.sym}','${escapedName}','${idx.key}');return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות מחקות">${idx.name}</a></td><td>${idx.region}</td>`;
     INDEX_FIELDS.forEach(f => {
       if (f.ref) {
         const ref = getRefChange("indices", idx.key);
@@ -465,7 +485,7 @@ function switchSectorRegion(region, btn) {
 function renderSectors() {
   const sectors = getCurrentSectors();
   const etfs = getCurrentSectorETFs();
-  let html = `<thead><tr><th>��קטור</th>`;
+  let html = `<thead><tr><th>סקטור</th>`;
   SECTOR_FIELDS.forEach(f => {
     if (f.key === "funds") {
       html += `<th>${f.label}</th>`;
@@ -477,9 +497,11 @@ function renderSectors() {
   sectors.forEach(sec => {
     const sectorName = sec.name;
     const etf = sec.etf || etfs[sectorName];
-    const escapedName = sectorName.replace(/'/g, "\\'");
-    const fundsJson = sec.funds ? JSON.stringify(sec.funds) : 'null';
-    html += `<tr><td class="label"><a href="#" onclick="openChart('${etf}','${escapedName}',${fundsJson});return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות">${sectorName}</a></td>`;
+    const escapedName = sectorName.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    // Store funds in window._sectorFunds map to avoid JSON in onclick
+    if (!window._sectorFunds) window._sectorFunds = {};
+    window._sectorFunds[etf] = sec.funds || null;
+    html += `<tr><td class="label"><a href="#" onclick="openChartSector('${etf}','${escapedName}');return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות">${sectorName}</a></td>`;
     SECTOR_FIELDS.forEach(f => {
       if (f.key === "region") {
         html += `<td>${sec.region}</td>`;
