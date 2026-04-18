@@ -576,27 +576,39 @@ async function testApi() {
 
 // ── Fetch All Data ──────────────────────────────────────────────────────────
 
-async function fetchAllData() {
-  document.getElementById("loadingOverlay").classList.remove("hidden");
-  document.getElementById("fetchBtn").disabled = true;
+// only: null/undefined = all sections, or array e.g. ["indices","fear"]
+async function fetchAllData(only) {
+  const has = (s) => !only || only.includes(s);
+  const isPartial = !!only;
+
+  if (!isPartial) {
+    document.getElementById("loadingOverlay").classList.remove("hidden");
+    document.getElementById("fetchBtn").disabled = true;
+  }
   let successCount = 0;
   const errors = [];
 
-  // Build Yahoo symbol list
+  // Build Yahoo symbol list — include only what's needed
   const yahooSymbols = [];
   const yahooMap = {};
-  INDICES.forEach(i => { yahooSymbols.push(i.sym); yahooMap[i.sym] = { cat: "indices", key: i.key }; });
-  COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
-  yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
-  yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
-  yahooSymbols.push("DX-Y.NYB"); yahooMap["DX-Y.NYB"] = { cat: "fear", key: "us_dollar_index" };
-  STATE.portfolio.forEach(s => {
-    const sym = s.symbol.toUpperCase();
-    if (!yahooMap[sym]) {
-      yahooSymbols.push(sym);
-      yahooMap[sym] = { cat: "portfolio", key: s.symbol };
-    }
-  });
+  if (has("indices") || has("macro"))
+    INDICES.forEach(i => { yahooSymbols.push(i.sym); yahooMap[i.sym] = { cat: "indices", key: i.key }; });
+  if (has("commodities"))
+    COMMODITIES.forEach(c => { yahooSymbols.push(c.sym); yahooMap[c.sym] = { cat: "commodities", key: c.key }; });
+  if (has("fear") || has("macro")) {
+    yahooSymbols.push("^VIX"); yahooMap["^VIX"] = { cat: "fear", key: "vix" };
+    yahooSymbols.push("^TNX"); yahooMap["^TNX"] = { cat: "fear", key: "yield_10y_us" };
+    yahooSymbols.push("DX-Y.NYB"); yahooMap["DX-Y.NYB"] = { cat: "fear", key: "us_dollar_index" };
+  }
+  if (has("portfolio") || !isPartial) {
+    STATE.portfolio.forEach(s => {
+      const sym = s.symbol.toUpperCase();
+      if (!yahooMap[sym]) {
+        yahooSymbols.push(sym);
+        yahooMap[sym] = { cat: "portfolio", key: s.symbol };
+      }
+    });
+  }
 
   // 1. Try Yahoo Finance (primary)
   let yahooWorked = false;
@@ -656,7 +668,7 @@ async function fetchAllData() {
   }
 
   // 1b. Fetch 10Y high/low and YTD for indices
-  if (yahooWorked) {
+  if (has("indices") && yahooWorked) {
     try {
       showStatus("שולף נתוני 10Y שיא/שפל + שינוי מתחילת שנה...", "success");
       for (const idx of INDICES) {
@@ -689,7 +701,7 @@ async function fetchAllData() {
   }
 
   // 1c. Fetch YTD and 12M change for sector ETFs
-  if (yahooWorked) {
+  if (has("sectors") && yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
       // Use all regions' sectors for historical data
@@ -716,7 +728,7 @@ async function fetchAllData() {
   }
 
   // 1d. Fetch YTD and 12M change for commodities
-  if (yahooWorked) {
+  if (has("commodities") && yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסחורות...", "success");
       for (const c of COMMODITIES) {
@@ -788,6 +800,7 @@ async function fetchAllData() {
   }
 
   // 3. FOREX — All currencies normalized to ILS
+  if (!has("currencies")) { /* skip */ } else
   try {
     showStatus("שולף שערי מטבעות מול שקל...", "success");
     // First fetch all needed Yahoo symbols
@@ -846,6 +859,7 @@ async function fetchAllData() {
   } catch(e) { errors.push("מט״ח: " + e.message); }
 
   // 4. SECTORS via Yahoo Finance — fetch ALL regions' ETFs at once
+  if (!has("sectors")) { /* skip */ } else
   try {
     showStatus("שולף ביצועי סקטורים מ-Yahoo Finance...", "success");
     // Collect all unique ETF symbols from all regions
@@ -897,6 +911,7 @@ async function fetchAllData() {
   }
 
   // 5. BOI — Bank of Israel representative exchange rates (שער יציג)
+  if (!has("currencies") && !has("macro")) { /* skip */ } else
   try {
     showStatus("שולף שערי יציג מבנק ישראל...", "success");
     const boiRates = await fetchBOI();
@@ -941,6 +956,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("BOI:", e.message); }
 
   // 6. World Bank — Macro data: GDP, inflation, unemployment (free, no key)
+  if (!has("macro")) { /* skip */ } else
   try {
     showStatus("שולף נתוני מאקרו מ-World Bank...", "success");
     const wb = await fetchWorldBank();
@@ -956,7 +972,7 @@ async function fetchAllData() {
   } catch(e) { errors.push("World Bank: " + e.message); }
 
   // 7. FRED — Macro data override with more current data (optional, needs key)
-  if (STATE.fredApiKey) {
+  if (has("macro") && STATE.fredApiKey) {
     try {
       showStatus("שולף נתוני מאקרו מ-FRED...", "success");
       const fred = await fetchAllFRED();
@@ -1012,7 +1028,7 @@ async function fetchAllData() {
   }
 
   // 8. FRED — 10Y Bond yields (optional, needs key)
-  if (STATE.fredApiKey) {
+  if (has("macro") && STATE.fredApiKey) {
     try {
       showStatus("שולף תשואות אג״ח 10Y מ-FRED...", "success");
       const bonds = await fetchFREDBonds();
@@ -1027,6 +1043,7 @@ async function fetchAllData() {
   }
 
   // 9. Fill missing macro fields via Yahoo Finance proxies
+  if (!has("macro")) { /* skip */ } else
   try {
     showStatus("משלים נתוני מאקרו חסרים...", "success");
     // Bond ETFs as proxies for 10Y yields when FRED is unavailable
@@ -1051,6 +1068,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("Macro proxies:", e.message); }
 
   // 10. Scrape macro data from Trading Economics (try matrix first, then individual pages)
+  if (!has("macro")) { /* skip */ } else
   try {
     showStatus("משלים נתוני מאקרו מ-Trading Economics...", "success");
     let macroScraped = await fetchMacroScrape();
@@ -1071,6 +1089,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("Macro scrape:", e.message); }
 
   // 11. Fetch P/E for index ETFs — Yahoo quoteSummary (primary) + stockanalysis fallback
+  if (!has("indices")) { /* skip */ } else
   try {
     showStatus("שולף מכפילים למדדים...", "success");
     const etfPEList = INDICES.filter(i => i.sa && i.saType === "e");
@@ -1090,6 +1109,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("ETF P/E:", e.message); }
 
   // 11b. Fetch P/E for SECTOR ETFs
+  if (!has("sectors")) { /* skip */ } else
   try {
     showStatus("שולף P/E לסקטורים...", "success");
     const allSectorList = [];
@@ -1112,7 +1132,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("Sector P/E:", e.message); }
 
   // 12. FRED — Yield Spread 10Y-2Y (auto-calc for fear screen)
-  if (STATE.fredApiKey) {
+  if (has("fear") && STATE.fredApiKey) {
     try {
       showStatus("מחשב פער עקום תשואות 10Y-2Y...", "success");
       const [dgs10, dgs2] = await Promise.all([
@@ -1129,6 +1149,7 @@ async function fetchAllData() {
   }
 
   // 12b. Fetch % S&P500 stocks above 200-day MA (via Yahoo: ^SPXA200R)
+  if (!has("fear")) { /* skip */ } else
   try {
     showStatus("שולף % מניות מעל ממוצע 200 יום...", "success");
     const ma200q = await yahooQuote("^SPXA200R").catch(() => null);
@@ -1140,6 +1161,7 @@ async function fetchAllData() {
   } catch(e) { console.warn("MA200:", e.message); }
 
   // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
+  if (!has("indices")) { /* skip */ } else
   try {
     showStatus("שולף Shiller CAPE ומכפילים...", "success");
     const multpl = await fetchMultpl();
@@ -1155,20 +1177,25 @@ async function fetchAllData() {
   } catch(e) { console.warn("multpl:", e.message); }
 
   saveState();
-  renderAll();
-
-  document.getElementById("loadingOverlay").classList.add("hidden");
-  document.getElementById("fetchBtn").disabled = false;
-
-  const proxyLabel = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "";
-  if (successCount === 0) {
-    showStatus(`✕ נכשל: ${errors.join(" | ")}`, "error");
-  } else if (errors.length === 0) {
-    showStatus(`✓ ${successCount} קטגוריות עודכנו בהצלחה ${proxyLabel ? `[${proxyLabel}]` : ""}`, "success");
+  if (isPartial) {
+    // Render only the changed sections
+    only.forEach(s => renderSection(s));
+    const label = only.map(s => ({ macro:"מאקרו", indices:"מדדים", sectors:"סקטורים", commodities:"סחורות", currencies:"מטבעות", fear:"פחד", portfolio:"תיק" }[s] || s)).join(", ");
+    showStatus(`✓ ${label} עודכן${only.length > 1 ? "ו" : ""}`, "success");
   } else {
-    showStatus(`✓ עודכנו ${successCount}. חסרים: ${errors.join(", ")}`, "success");
+    renderAll();
+    document.getElementById("loadingOverlay").classList.add("hidden");
+    document.getElementById("fetchBtn").disabled = false;
+    const proxyLabel = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "";
+    if (successCount === 0) {
+      showStatus(`✕ נכשל: ${errors.join(" | ")}`, "error");
+    } else if (errors.length === 0) {
+      showStatus(`✓ ${successCount} קטגוריות עודכנו בהצלחה ${proxyLabel ? `[${proxyLabel}]` : ""}`, "success");
+    } else {
+      showStatus(`✓ עודכנו ${successCount}. חסרים: ${errors.join(", ")}`, "success");
+    }
   }
-  console.log("Fetch result:", { success: successCount, errors, yahooWorked, proxy: _workingProxy });
+  console.log("Fetch result:", { only, success: successCount, errors, proxy: _workingProxy });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

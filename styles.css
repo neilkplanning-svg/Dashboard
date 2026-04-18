@@ -307,6 +307,136 @@ select.form-input { min-width: 120px; }
   gap: 12px;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* REFRESH BUTTON (per-section)                                                   */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+.refresh-btn {
+  background: none;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  color: var(--text-faint);
+  font-size: 14px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  line-height: 1;
+}
+.refresh-btn:hover { background: rgba(56,189,248,0.1); border-color: var(--accent); color: var(--accent); }
+.refresh-btn.spinning { animation: spin 0.8s linear infinite; pointer-events: none; opacity: 0.6; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* API PANEL — tiered sources panel                                               */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+.api-panel {
+  margin-top: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  overflow: hidden;
+  display: none;
+}
+.api-panel.show { display: block; }
+
+.api-tier-section { border-bottom: 1px solid var(--border); }
+.api-tier-section:last-child { border-bottom: none; }
+
+.api-tier-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: rgba(0,0,0,0.2);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.api-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.api-tier-auto  { background: rgba(34,197,94,0.15);  color: var(--green);  border: 1px solid rgba(34,197,94,0.3);  }
+.api-tier-free  { background: rgba(56,189,248,0.12); color: var(--accent); border: 1px solid rgba(56,189,248,0.25); }
+.api-tier-paid  { background: rgba(234,179,8,0.12);  color: var(--yellow); border: 1px solid rgba(234,179,8,0.25);  }
+
+.api-sources-grid { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+
+.api-source-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex-wrap: wrap;
+  transition: border-color 0.15s;
+}
+.api-source-row:hover { border-color: var(--border-light); }
+
+.api-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.api-dot-on  { background: var(--green);  box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+.api-dot-off { background: var(--text-ghost); }
+
+.api-source-info { flex: 1; min-width: 160px; }
+.api-source-name { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.api-source-desc { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+.api-source-uses { font-size: 10px; color: var(--text-faint); font-style: italic; }
+
+.api-source-links { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex-shrink: 0; }
+.api-site-link   { color: var(--accent);  font-size: 11px; text-decoration: none; white-space: nowrap; }
+.api-signup-link { color: var(--yellow);  font-size: 11px; text-decoration: none; white-space: nowrap; }
+.api-site-link:hover, .api-signup-link:hover { text-decoration: underline; }
+
+.api-key-input {
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 5px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.api-key-input:focus { outline: none; border-color: var(--accent); }
+.api-key-input::placeholder { color: var(--text-ghost); font-size: 11px; }
+
+.api-save-btn {
+  padding: 5px 12px;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.api-save-btn:hover { opacity: 0.85; }
+
+/* mobile tweaks for API panel */
+@media (max-width: 768px) {
+  .api-source-row { flex-direction: column; }
+  .api-source-links { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+  .api-key-input { max-width: 100%; min-width: unset; width: 100%; }
+}
+
 /* Reference point */
 .ref-btn {
   background: none; border: 1px solid var(--border-light); border-radius: 4px;
