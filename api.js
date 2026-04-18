@@ -281,6 +281,35 @@ async function yahoo12MChange(symbol) {
   return startPrice ? ((price - startPrice) / startPrice * 100) : 0;
 }
 
+// ── Yahoo Finance quoteSummary — P/E, Forward P/E (free via proxy) ──────────
+
+async function yahooQuoteSummary(symbol) {
+  // Returns trailingPE, forwardPE, marketCap, beta, eps, priceToBook, debtToEquity
+  try {
+    const mods = "summaryDetail,defaultKeyStatistics,financialData";
+    const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${mods}`;
+    const resp = await fetchWithProxy(url, 12000);
+    const text = await resp.text();
+    const json = JSON.parse(text);
+    const r = json.quoteSummary?.result?.[0];
+    if (!r) return null;
+    const sd = r.summaryDetail || {};
+    const ks = r.defaultKeyStatistics || {};
+    const fd = r.financialData || {};
+    const raw = obj => obj?.raw ?? null;
+    return {
+      pe:        raw(sd.trailingPE)  || raw(ks.trailingPE)  || null,
+      forwardPE: raw(sd.forwardPE)   || raw(ks.forwardPE)   || null,
+      eps:       raw(ks.trailingEps) || null,
+      marketCap: raw(sd.marketCap)   || null,
+      beta:      raw(sd.beta)        || raw(ks.beta)        || null,
+      pb:        raw(ks.priceToBook) || null,
+      debtEquity: raw(fd.debtToEquity) || null,
+      divYield:  raw(sd.dividendYield) != null ? (raw(sd.dividendYield) * 100).toFixed(2) + "%" : null,
+    };
+  } catch(e) { return null; }
+}
+
 // ── Stock Analysis JSON API (free, no API key, CORS-friendly) ─────────────
 
 async function fetchSAOverview(type, symbol) {
@@ -292,48 +321,87 @@ async function fetchSAOverview(type, symbol) {
 }
 
 async function fetchETFMetrics(symbol) {
+  // Primary: Yahoo quoteSummary (most reliable)
+  try {
+    const ys = await yahooQuoteSummary(symbol);
+    if (ys && ys.pe) return { pe: ys.pe, forwardPE: ys.forwardPE, beta: ys.beta, divYield: ys.divYield };
+  } catch(e) {}
+  // Fallback: stockanalysis.com
   try {
     const data = await fetchSAOverview("e", symbol);
     if (!data || !data.data) return {};
     const d = data.data;
+    // SA returns values as strings like "28.50x" — strip non-numeric suffix
+    const saNum = v => v ? parseFloat(String(v).replace(/[^0-9.-]/g, "")) : null;
     return {
-      pe: d.pe ? parseFloat(d.pe) : null,
-      divYield: d.dividendYield ? parseFloat(d.dividendYield) : null,
-      beta: d.beta ? parseFloat(d.beta) : null,
+      pe: saNum(d.pe) || saNum(d.priceEarnings) || null,
+      forwardPE: saNum(d.forwardPE) || null,
+      divYield: d.dividendYield || null,
+      beta: saNum(d.beta) || null,
       holdings: d.holdingsCount || null,
-      expenseRatio: d.expenseRatio ? parseFloat(d.expenseRatio) : null,
+      expenseRatio: saNum(d.expenseRatio) || null,
     };
   } catch(e) { return {}; }
 }
 
 async function fetchStockDetails(symbol) {
+  // Primary: Yahoo quoteSummary
+  let yData = {};
+  try {
+    const ys = await yahooQuoteSummary(symbol);
+    if (ys) yData = ys;
+  } catch(e) {}
+
+  // Secondary: stockanalysis.com
+  let saData = {};
   try {
     const data = await fetchSAOverview("s", symbol);
-    if (!data || !data.data) return {};
-    const d = data.data;
-    return {
-      pe: d.pe ? parseFloat(d.pe) : null,
-      forwardPE: d.forwardPE ? parseFloat(d.forwardPE) : null,
-      eps: d.eps ? parseFloat(d.eps) : null,
-      marketCap: d.marketCap || null,
-      beta: d.beta ? parseFloat(d.beta) : null,
-      pb: d.pb ? parseFloat(d.pb) : (d.priceToBook ? parseFloat(d.priceToBook) : null),
-      debtEquity: d.debtEquity ? parseFloat(d.debtEquity) : (d.debtToEquity ? parseFloat(d.debtToEquity) : null),
-      divYield: d.dividendYield || null,
-      revenue: d.revenue || null,
-      sharesOut: d.sharesOutstanding || d.shares || null,
-      // Analyst data from overview
-      analystRating: d.analystRating || d.analystConsensus || null,
-      priceTarget: d.analystTarget ? parseFloat(d.analystTarget) : null,
-      analystCount: d.analystCount ? parseInt(d.analystCount) : null,
-      // Ratings breakdown
-      strongBuy: d.strongBuy ? parseInt(d.strongBuy) : null,
-      buy: d.buy ? parseInt(d.buy) : null,
-      hold: d.hold ? parseInt(d.hold) : null,
-      sell: d.sell ? parseInt(d.sell) : null,
-      strongSell: d.strongSell ? parseInt(d.strongSell) : null,
-    };
-  } catch(e) { return {}; }
+    if (data?.data) {
+      const d = data.data;
+      const saNum = v => v ? parseFloat(String(v).replace(/[^0-9.-]/g, "")) : null;
+      saData = {
+        pe:          saNum(d.pe) || null,
+        forwardPE:   saNum(d.forwardPE) || null,
+        eps:         saNum(d.eps) || null,
+        marketCap:   d.marketCap || null,
+        beta:        saNum(d.beta) || null,
+        pb:          saNum(d.pb) || saNum(d.priceToBook) || null,
+        debtEquity:  saNum(d.debtEquity) || saNum(d.debtToEquity) || null,
+        divYield:    d.dividendYield || null,
+        revenue:     d.revenue || null,
+        sharesOut:   d.sharesOutstanding || d.shares || null,
+        analystRating: d.analystRating || d.analystConsensus || null,
+        priceTarget: saNum(d.analystTarget) || null,
+        analystCount: d.analystCount ? parseInt(d.analystCount) : null,
+        strongBuy:   d.strongBuy ? parseInt(d.strongBuy) : null,
+        buy:         d.buy ? parseInt(d.buy) : null,
+        hold:        d.hold ? parseInt(d.hold) : null,
+        sell:        d.sell ? parseInt(d.sell) : null,
+        strongSell:  d.strongSell ? parseInt(d.strongSell) : null,
+      };
+    }
+  } catch(e) {}
+
+  // Merge: SA wins for analyst/text fields, Yahoo wins for numeric PE (more reliable)
+  return {
+    ...saData,
+    pe:         yData.pe        || saData.pe        || null,
+    forwardPE:  yData.forwardPE || saData.forwardPE || null,
+    eps:        yData.eps       || saData.eps       || null,
+    beta:       yData.beta      || saData.beta      || null,
+    pb:         yData.pb        || saData.pb        || null,
+    debtEquity: yData.debtEquity|| saData.debtEquity|| null,
+    divYield:   yData.divYield  || saData.divYield  || null,
+    marketCap:  saData.marketCap || (yData.marketCap ? fmtMarketCap(yData.marketCap) : null),
+  };
+}
+
+function fmtMarketCap(val) {
+  if (!val || isNaN(val)) return null;
+  if (val >= 1e12) return (val / 1e12).toFixed(2) + "T";
+  if (val >= 1e9)  return (val / 1e9).toFixed(2) + "B";
+  if (val >= 1e6)  return (val / 1e6).toFixed(2) + "M";
+  return val.toString();
 }
 
 // Kept for compatibility — now delegates to fetchStockDetails
@@ -958,22 +1026,24 @@ async function fetchAllData() {
     } catch(e) { console.warn("FRED Bonds:", e.message); }
   }
 
-  // 9. Fill missing macro fields with estimated/scraped data from Yahoo Finance
-  // Central bank rates via bond ETFs as proxy
+  // 9. Fill missing macro fields via Yahoo Finance proxies
   try {
     showStatus("משלים נתוני מאקרו חסרים...", "success");
+    // Bond ETFs as proxies for 10Y yields when FRED is unavailable
     const macroProxies = [
-      { sym: "^IRX", region: "US", field: "interest_rate", transform: v => v.toFixed(2) },  // 13-week T-bill ≈ fed funds
-      { sym: "^TNX", region: "US", field: "bond_10y", transform: v => v.toFixed(2) },
-      { sym: "^TYX", region: "US", field: null },  // 30Y for reference
+      { sym: "^IRX",    region: "US", field: "interest_rate" },  // 13-week T-bill ≈ fed funds
+      { sym: "^TNX",    region: "US", field: "bond_10y" },       // US 10Y treasury yield
+      { sym: "^TNGB",   region: "GB", field: "bond_10y" },       // UK 10Y gilt yield
+      { sym: "^TNGDE",  region: "DE", field: "bond_10y" },       // German bund 10Y
+      { sym: "VGIT",    region: "US", field: null },             // (skipped — proxy only)
     ];
     for (const mp of macroProxies) {
-      if (mp.field && (!STATE.macro[mp.region] || !STATE.macro[mp.region][mp.field])) {
+      if (mp.field && (!STATE.macro[mp.region]?.[mp.field])) {
         try {
           const q = await yahooQuote(mp.sym);
           if (q && q.price) {
             if (!STATE.macro[mp.region]) STATE.macro[mp.region] = {};
-            STATE.macro[mp.region][mp.field] = mp.transform(q.price);
+            STATE.macro[mp.region][mp.field] = q.price.toFixed(2);
           }
         } catch(e) { console.warn(`Macro proxy ${mp.sym}:`, e.message); }
       }
@@ -1000,21 +1070,46 @@ async function fetchAllData() {
     if (scraped > 0) { updateTimestamp("macro"); successCount++; }
   } catch(e) { console.warn("Macro scrape:", e.message); }
 
-  // 11. Fetch P/E for index ETFs via stockanalysis.com JSON API
+  // 11. Fetch P/E for index ETFs — Yahoo quoteSummary (primary) + stockanalysis fallback
   try {
-    showStatus("שולף מכפילים למדדים מ-Stock Analysis...", "success");
-    const etfPESymbols = INDICES.filter(i => i.sa && i.saType === "e").map(i => i.sym);
-    for (const sym of etfPESymbols) {
-      try {
-        const metrics = await fetchETFMetrics(sym);
-        const idx = INDICES.find(i => i.sym === sym || i.key === sym);
-        if (idx && metrics.pe) {
+    showStatus("שולף מכפילים למדדים...", "success");
+    const etfPEList = INDICES.filter(i => i.sa && i.saType === "e");
+    // Fetch in parallel batches of 3 to be polite
+    for (let i = 0; i < etfPEList.length; i += 3) {
+      const batch = etfPEList.slice(i, i + 3);
+      await Promise.all(batch.map(async idx => {
+        try {
+          const metrics = await fetchETFMetrics(idx.sym);
           if (!STATE.indices[idx.key]) STATE.indices[idx.key] = {};
-          STATE.indices[idx.key].pe_current = metrics.pe.toFixed(2);
-        }
-      } catch(e) {}
+          if (metrics.pe)        STATE.indices[idx.key].pe_current  = parseFloat(metrics.pe).toFixed(2);
+          if (metrics.forwardPE) STATE.indices[idx.key].pe_forward  = parseFloat(metrics.forwardPE).toFixed(2);
+        } catch(e) { console.warn("ETF PE", idx.sym, e.message); }
+      }));
     }
+    updateTimestamp("indices");
   } catch(e) { console.warn("ETF P/E:", e.message); }
+
+  // 11b. Fetch P/E for SECTOR ETFs
+  try {
+    showStatus("שולף P/E לסקטורים...", "success");
+    const allSectorList = [];
+    Object.values(SECTOR_REGIONS).forEach(r => r.sectors.forEach(s => {
+      if (s.etf && !allSectorList.find(x => x.etf === s.etf)) allSectorList.push(s);
+    }));
+    for (let i = 0; i < allSectorList.length; i += 3) {
+      const batch = allSectorList.slice(i, i + 3);
+      await Promise.all(batch.map(async sec => {
+        try {
+          const metrics = await fetchETFMetrics(sec.etf);
+          if (metrics.pe) {
+            if (!STATE.sectors[sec.name]) STATE.sectors[sec.name] = {};
+            STATE.sectors[sec.name].pe = parseFloat(metrics.pe).toFixed(2);
+          }
+        } catch(e) {}
+      }));
+    }
+    updateTimestamp("sectors");
+  } catch(e) { console.warn("Sector P/E:", e.message); }
 
   // 12. FRED — Yield Spread 10Y-2Y (auto-calc for fear screen)
   if (STATE.fredApiKey) {
