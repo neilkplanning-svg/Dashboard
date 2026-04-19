@@ -476,11 +476,35 @@ document.addEventListener("keydown", function(e) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function showLoadingBar() {
   const b = document.getElementById("loadingBar");
+  const p = document.getElementById("loadingProgress");
   if (b) b.classList.remove("hidden");
+  if (p) p.classList.remove("hidden");
+  setProgress(0, "מתחיל…");
 }
 function hideLoadingBar() {
   const b = document.getElementById("loadingBar");
+  const p = document.getElementById("loadingProgress");
   if (b) b.classList.add("hidden");
+  if (p) p.classList.add("hidden");
+}
+// Progress state (used by fetchAllData in api.js)
+let LOADING_STATE = { done: 0, total: 0 };
+function resetProgress(total) {
+  LOADING_STATE = { done: 0, total: Math.max(1, total) };
+  setProgress(0, "מתחיל…");
+}
+function stepProgress(label) {
+  LOADING_STATE.done = Math.min(LOADING_STATE.done + 1, LOADING_STATE.total);
+  const pct = Math.round((LOADING_STATE.done / LOADING_STATE.total) * 100);
+  setProgress(pct, label);
+}
+function setProgress(pct, label) {
+  const fill = document.getElementById("loadingBarFill");
+  const pctEl = document.getElementById("loadingProgressPct");
+  const lblEl = document.getElementById("loadingProgressLabel");
+  if (fill) fill.style.width = pct + "%";
+  if (pctEl) pctEl.textContent = pct + "%";
+  if (lblEl && label) lblEl.textContent = label;
 }
 function showSectionLoading(section) {
   const panel = document.getElementById("panel-" + section);
@@ -597,6 +621,45 @@ function fmtNum(v, decimals = 2) {
   return n.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
+// Format large GDP numbers in USD (e.g., "27.36T", "4.19T", "520B")
+function fmtGDP(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  if (n >= 1e12) return "$" + (n / 1e12).toFixed(2) + "T";
+  if (n >= 1e9)  return "$" + (n / 1e9).toFixed(1) + "B";
+  if (n >= 1e6)  return "$" + (n / 1e6).toFixed(1) + "M";
+  return "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+// Per-capita GDP: always show as money with commas
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  return "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+// ── INFO MODAL (click-to-explain) ────────────────────────────────────────
+function openInfo(key) {
+  const info = (typeof METRIC_INFO !== "undefined") ? METRIC_INFO[key] : null;
+  if (!info) return;
+  document.getElementById("infoTitle").textContent = "ℹ️ " + info.title;
+  const esc = s => (s || "").replace(/</g, "&lt;");
+  let html = "";
+  if (info.what)  html += `<div class="info-section"><div class="info-section-label">מה זה?</div><div class="info-section-body">${esc(info.what)}</div></div>`;
+  if (info.how)   html += `<div class="info-section"><div class="info-section-label">איך מחושב?</div><div class="info-section-body">${esc(info.how)}</div></div>`;
+  if (info.range) html += `<div class="info-section"><div class="info-section-label">טווחי ערכים</div><div class="info-section-body">${esc(info.range)}</div></div>`;
+  if (info.use)   html += `<div class="info-section"><div class="info-section-label">שימוש במדד</div><div class="info-section-body">${esc(info.use)}</div></div>`;
+  if (info.src)   html += `<div class="info-source">📡 מקור: ${esc(info.src)}</div>`;
+  document.getElementById("infoBody").innerHTML = html;
+  document.getElementById("infoModal").classList.remove("hidden");
+}
+function closeInfo(e) {
+  if (!e || e.target === document.getElementById("infoModal")) {
+    document.getElementById("infoModal").classList.add("hidden");
+  }
+}
+
 function colorClass(v) {
   const n = parseFloat(v);
   if (isNaN(n)) return "";
@@ -613,8 +676,11 @@ function updateTimestamp(section) {
 // EDITABLE CELL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function makeCell(section, rowKey, fieldKey, value, isColor) {
-  const display = fmtNum(value);
+function makeCell(section, rowKey, fieldKey, value, isColor, fmt) {
+  let display;
+  if (fmt === "gdp") display = fmtGDP(value);
+  else if (fmt === "money") display = fmtMoney(value);
+  else display = fmtNum(value);
   const cls = isColor ? colorClass(value) : "";
   return `<span class="cell-val ${cls}" onclick="startEdit(this,'${section}','${rowKey}','${fieldKey}')" title="לחץ לעריכה">${display}</span>`;
 }
@@ -686,7 +752,7 @@ function renderMacro() {
   REGIONS.forEach(r => {
     html += `<tr><td class="label">${r.flag} ${r.name}</td>`;
     MACRO_FIELDS.forEach(f => {
-      html += `<td>${makeCell("macro", r.key, f.key, STATE.macro[r.key]?.[f.key], false)}</td>`;
+      html += `<td>${makeCell("macro", r.key, f.key, STATE.macro[r.key]?.[f.key], false, f.fmt)}</td>`;
     });
     html += `</tr>`;
   });
@@ -701,7 +767,12 @@ function renderIndices() {
     if (f.ref) {
       html += `<th>${f.label}</th>`;
     } else {
-      html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`;
+      const hasInfo = (f.key === "pe_historical_avg" || f.key === "shiller_cape");
+      if (hasInfo) {
+        html += `<th><span onclick="openInfo('${f.key}')" style="cursor:pointer;color:var(--accent)" title="לחץ להסבר על המדד">${f.label}${f.manual ? " 🔒" : ""} ℹ️</span></th>`;
+      } else {
+        html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`;
+      }
     }
   });
   html += `<th>📌 רפרנס</th>`;
@@ -852,9 +923,12 @@ function renderFear() {
       extra = `<div style="margin-top:8px;color:var(--red);font-size:12px;font-weight:600">⚠ עקום תשואות הפוך — אזהרת מיתון</div>`;
     }
 
-    html += `<div class="fear-card">
-      <div class="fear-label">${ind.label}${ind.manual ? " 🔒" : ""}</div>
-      <div class="fear-value"><span class="cell-val" onclick="startEdit(this,'fear','${ind.key}','value')" title="לחץ לעריכה">${display}</span></div>
+    const hasInfo = typeof METRIC_INFO !== "undefined" && METRIC_INFO[ind.key];
+    const clickable = hasInfo ? ' clickable' : '';
+    const infoClick = hasInfo ? ` onclick="if(event.target.closest('.cell-val, .cell-edit, input'))return; openInfo('${ind.key}')" title="לחץ להסבר מלא על המדד"` : '';
+    html += `<div class="fear-card${clickable}"${infoClick}>
+      <div class="fear-label">${ind.label}${ind.manual ? " 🔒" : ""}${hasInfo ? ' <span style="color:var(--accent);font-size:12px">ℹ️</span>' : ''}</div>
+      <div class="fear-value"><span class="cell-val" onclick="event.stopPropagation();startEdit(this,'fear','${ind.key}','value')" title="לחץ לעריכה">${display}</span></div>
       <div class="fear-desc">${ind.desc}</div>
       ${extra}
     </div>`;
@@ -978,6 +1052,173 @@ function editPortfolioField(idx, field) {
   STATE.portfolio[idx][field] = parseFloat(val) || 0;
   saveState();
   renderPortfolio();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STOCK COMPARISON (up to 4)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const COMPARE_MAX = 4;
+window._compareStocks = []; // [{ symbol, data }]
+
+function renderCompareSlots() {
+  const el = document.getElementById("compareSlots");
+  if (!el) return;
+  let html = "";
+  window._compareStocks.forEach((s, i) => {
+    html += `<span class="compare-slot"><strong>${s.symbol}</strong>
+      <button class="remove" onclick="removeFromCompare(${i})" title="הסר">✕</button></span>`;
+  });
+  const empty = COMPARE_MAX - window._compareStocks.length;
+  for (let i = 0; i < empty; i++) {
+    html += `<span class="compare-slot empty">— ריק —</span>`;
+  }
+  el.innerHTML = html;
+}
+
+async function addToCompare() {
+  const input = document.getElementById("scannerSymbol");
+  const sym = (input?.value || "").trim().toUpperCase();
+  if (!sym) { showStatus("הזן סימול תחילה", "error"); return; }
+  if (window._compareStocks.length >= COMPARE_MAX) {
+    showStatus(`ניתן להשוות עד ${COMPARE_MAX} מניות — הסר אחת קודם`, "error");
+    return;
+  }
+  if (window._compareStocks.some(s => s.symbol === sym)) {
+    showStatus(`${sym} כבר בהשוואה`, "error");
+    return;
+  }
+  document.getElementById("comparePanel").classList.remove("hidden");
+  // Placeholder while loading
+  window._compareStocks.push({ symbol: sym, data: null });
+  renderCompareSlots();
+  renderCompareTable();
+  showStatus(`שולף נתונים ל-${sym}...`, "info");
+  try {
+    const data = await fetchCompareData(sym);
+    const entry = window._compareStocks.find(s => s.symbol === sym);
+    if (entry) entry.data = data;
+    renderCompareSlots();
+    renderCompareTable();
+  } catch (e) {
+    showStatus(`שגיאה בשליפת ${sym}: ${e.message}`, "error");
+    removeFromCompare(window._compareStocks.findIndex(s => s.symbol === sym));
+  }
+}
+
+async function fetchCompareData(sym) {
+  const isIL = sym.includes('.TA');
+  const q = await yahooQuote(sym).catch(() => null);
+  if (!q || !q.price) throw new Error("לא נמצא מחיר");
+  // agorot → ש"ח
+  if (isIL) {
+    q.price /= 100;
+    if (q.fiftyTwoWeekHigh) q.fiftyTwoWeekHigh /= 100;
+    if (q.fiftyTwoWeekLow)  q.fiftyTwoWeekLow  /= 100;
+  }
+  const [det, ytd, m12] = await Promise.all([
+    fetchStockDetails(sym).catch(() => ({})),
+    yahooYTDChange(sym).catch(() => null),
+    yahoo12MChange(sym).catch(() => null),
+  ]);
+  return {
+    price: q.price,
+    change_pct: q.change_pct,
+    currency: isIL ? '₪' : '$',
+    pe: det.pe || null,
+    forwardPE: det.forwardPE || null,
+    pb: det.pb || null,
+    eps: det.eps || null,
+    beta: det.beta || null,
+    debtEquity: det.debtEquity || null,
+    divYield: det.divYield || null,
+    marketCap: det.marketCap || null,
+    priceTarget: det.priceTarget || null,
+    analystRating: det.analystRating || null,
+    ytdChange: ytd,
+    m12Change: m12,
+  };
+}
+
+function removeFromCompare(idx) {
+  if (idx < 0) return;
+  window._compareStocks.splice(idx, 1);
+  renderCompareSlots();
+  renderCompareTable();
+  if (window._compareStocks.length === 0) {
+    document.getElementById("comparePanel").classList.add("hidden");
+  }
+}
+
+function clearCompare() {
+  window._compareStocks = [];
+  renderCompareSlots();
+  renderCompareTable();
+  document.getElementById("comparePanel").classList.add("hidden");
+}
+
+function renderCompareTable() {
+  const el = document.getElementById("compareTable");
+  if (!el) return;
+  if (window._compareStocks.length === 0) { el.innerHTML = ""; return; }
+
+  const rows = [
+    { label: "מחיר נוכחי", key: "price", fmt: (v, d) => d.currency + parseFloat(v).toFixed(2), bestHigh: null },
+    { label: "שינוי יומי %", key: "change_pct", fmt: v => parseFloat(v).toFixed(2) + "%", bestHigh: true, color: true },
+    { label: "שינוי YTD %", key: "ytdChange", fmt: v => parseFloat(v).toFixed(2) + "%", bestHigh: true, color: true },
+    { label: "שינוי 12M %", key: "m12Change", fmt: v => parseFloat(v).toFixed(2) + "%", bestHigh: true, color: true },
+    { label: "P/E נוכחי", key: "pe", fmt: v => parseFloat(v).toFixed(2), bestHigh: false }, // lower = cheaper
+    { label: "P/E עתידי", key: "forwardPE", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
+    { label: "P/B", key: "pb", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
+    { label: "EPS", key: "eps", fmt: (v, d) => d.currency + parseFloat(v).toFixed(2), bestHigh: true },
+    { label: "Beta", key: "beta", fmt: v => parseFloat(v).toFixed(2), bestHigh: null },
+    { label: "חוב/הון", key: "debtEquity", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
+    { label: "דיבידנד", key: "divYield", fmt: v => v, bestHigh: null },
+    { label: "שווי שוק", key: "marketCap", fmt: v => v, bestHigh: null },
+    { label: "יעד אנליסטים", key: "priceTarget", fmt: (v, d) => d.currency + parseFloat(v).toFixed(2), bestHigh: null },
+    { label: "קונצנזוס", key: "analystRating", fmt: v => v, bestHigh: null },
+  ];
+
+  let html = `<div class="compare-table-wrap"><table class="compare-table"><thead><tr><th>מדד</th>`;
+  window._compareStocks.forEach(s => html += `<th>${s.symbol}</th>`);
+  html += `</tr></thead><tbody>`;
+
+  rows.forEach(row => {
+    html += `<tr><td>${row.label}</td>`;
+    // Collect numeric values for best/worst highlighting
+    const vals = window._compareStocks.map(s => {
+      if (!s.data) return null;
+      const v = s.data[row.key];
+      if (v == null || v === "") return null;
+      const n = parseFloat(v);
+      return isNaN(n) ? null : n;
+    });
+    const valid = vals.filter(v => v != null);
+    let best = null, worst = null;
+    if (row.bestHigh != null && valid.length > 1) {
+      if (row.bestHigh) { best = Math.max(...valid); worst = Math.min(...valid); }
+      else              { best = Math.min(...valid); worst = Math.max(...valid); }
+    }
+    window._compareStocks.forEach((s, idx) => {
+      if (!s.data) { html += `<td>…</td>`; return; }
+      const v = s.data[row.key];
+      if (v == null || v === "") { html += `<td style="color:var(--text-ghost)">—</td>`; return; }
+      let cls = "";
+      const n = vals[idx];
+      if (best != null && n != null) {
+        if (n === best)  cls = "best";
+        else if (n === worst) cls = "worst";
+      }
+      if (row.color && n != null) cls = n >= 0 ? "best" : "worst";
+      let display;
+      try { display = row.fmt(v, s.data); }
+      catch(e) { display = v; }
+      html += `<td class="${cls}">${display}</td>`;
+    });
+    html += `</tr>`;
+  });
+  html += `</tbody></table></div>`;
+  el.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

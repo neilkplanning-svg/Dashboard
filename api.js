@@ -586,10 +586,14 @@ async function fetchMacroTE() {
     { url: "https://tradingeconomics.com/country-list/interest-rate", field: "interest_rate" },
     { url: "https://tradingeconomics.com/country-list/inflation-rate", field: "inflation" },
     { url: "https://tradingeconomics.com/country-list/unemployment-rate", field: "unemployment" },
+    { url: "https://tradingeconomics.com/country-list/government-bond-10y", field: "bond_10y" },
+    { url: "https://tradingeconomics.com/country-list/government-debt-to-gdp", field: "debt_to_gdp" },
   ];
   const countryNames = {
-    'United States': 'US', 'Euro Area': 'EU', 'Japan': 'JP',
-    'China': 'CN', 'India': 'IN', 'Israel': 'IL'
+    'United States': 'US', 'United Kingdom': 'GB', 'Germany': 'DE', 'France': 'FR',
+    'Japan': 'JP', 'China': 'CN', 'India': 'IN', 'Israel': 'IL',
+    'Brazil': 'BR', 'South Korea': 'KR', 'Mexico': 'MX', 'Turkey': 'TR',
+    'Euro Area': 'EU',
   };
   for (const page of pages) {
     try {
@@ -597,10 +601,10 @@ async function fetchMacroTE() {
       const text = await resp.text();
       for (const [name, code] of Object.entries(countryNames)) {
         if (!results[code]) results[code] = {};
-        // Pattern: country name followed by a number in a table cell
-        const pat = new RegExp(name + '[\\s\\S]{0,300}?<td[^>]*>\\s*([0-9]+\\.?[0-9]*)\\s*<', 'i');
+        // Pattern: country name followed by a number in a table cell. Allow negative values.
+        const pat = new RegExp(name + '[\\s\\S]{0,300}?<td[^>]*>\\s*(-?[0-9]+\\.?[0-9]*)\\s*<', 'i');
         const m = text.match(pat);
-        if (m && !results[code][page.field]) {
+        if (m && results[code][page.field] == null) {
           results[code][page.field] = parseFloat(m[1]);
         }
       }
@@ -727,6 +731,20 @@ async function fetchAllData(only) {
   const isPartial = !!only;
 
   showLoadingBar();
+  // Estimate total progress steps based on which sections are fetched
+  const stepMap = {
+    indices: 5,       // batch quotes, 10Y hist, YTD, 12M, PE
+    sectors: 3,       // ETF quotes, YTD/12M, PE
+    commodities: 2,   // batch + hist
+    currencies: 2,    // Yahoo + BOI
+    fear: 3,          // batch + FRED spread + CNN/FRED
+    macro: 5,         // WB + FRED + bonds + proxies + TE
+    portfolio: 1,
+  };
+  const sections = isPartial ? only : ["macro","indices","sectors","commodities","currencies","fear","portfolio"];
+  const totalSteps = sections.reduce((a, s) => a + (stepMap[s] || 1), 0) || 1;
+  resetProgress(totalSteps);
+
   if (!isPartial) {
     document.getElementById("fetchBtn").disabled = true;
     document.getElementById("fetchBtn").textContent = "⏳ טוען...";
@@ -763,7 +781,7 @@ async function fetchAllData(only) {
   // 1. Try Yahoo Finance (primary)
   let yahooWorked = false;
   try {
-    showStatus(`שולף ${yahooSymbols.length} סימולים מ-Yahoo Finance...`, "success");
+    stepProgress(`Yahoo Finance — ${yahooSymbols.length} סימולים`);
     const results = await yahooBatch(yahooSymbols);
     if (results.length > 0) {
       yahooWorked = true;
@@ -797,7 +815,8 @@ async function fetchAllData(only) {
         } else if (meta.cat === "portfolio") {
           const stock = STATE.portfolio.find(s => s.symbol.toUpperCase() === meta.key.toUpperCase());
           if (stock) {
-            stock.currentPrice = price;
+            // Israeli (.TA) Yahoo quotes are in אגורות → convert to ₪
+            stock.currentPrice = sym.endsWith(".TA") ? price / 100 : price;
             stock.dayChange = change;
             stock.lastFetched = new Date().toISOString();
             okByCategory.portfolio++;
@@ -820,7 +839,7 @@ async function fetchAllData(only) {
   // 1b. Fetch 10Y high/low and YTD for indices
   if (has("indices") && yahooWorked) {
     try {
-      showStatus("שולף נתוני 10Y שיא/שפל + שינוי מתחילת שנה...", "success");
+      stepProgress("מדדים — שיא/שפל 10Y + YTD + 12M");
       for (const idx of INDICES) {
         try {
           const hist = await yahooHistorical(idx.sym, "10y");
@@ -853,7 +872,7 @@ async function fetchAllData(only) {
   // 1c. Fetch YTD and 12M change for sector ETFs (keyed by region:name)
   if (has("sectors") && yahooWorked) {
     try {
-      showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
+      stepProgress("סקטורים — שינויים YTD/12M");
       const allSectorRegional = [];
       Object.entries(SECTOR_REGIONS).forEach(([regionKey, r]) => r.sectors.forEach(s => {
         if (s.etf) allSectorRegional.push({ region: regionKey, name: s.name, etf: s.etf });
@@ -883,7 +902,7 @@ async function fetchAllData(only) {
   // 1d. Fetch YTD and 12M change for commodities
   if (has("commodities") && yahooWorked) {
     try {
-      showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסחורות...", "success");
+      stepProgress("סחורות — שינויים YTD/12M");
       for (const c of COMMODITIES) {
         try {
           const ytdChange = await yahooYTDChange(c.sym);
@@ -955,7 +974,7 @@ async function fetchAllData(only) {
   // 3. FOREX — All currencies normalized to ILS
   if (!has("currencies")) { /* skip */ } else
   try {
-    showStatus("שולף שערי מטבעות מול שקל...", "success");
+    stepProgress("מטבעות — Yahoo Finance");
     // First fetch all needed Yahoo symbols
     const directSymbols = CURRENCIES.filter(c => c.direct && c.yahoo).map(c => c.yahoo);
     const crossSymbols = new Set();
@@ -1014,7 +1033,7 @@ async function fetchAllData(only) {
   // 4. SECTORS via Yahoo Finance — fetch ALL regions' ETFs at once
   if (!has("sectors")) { /* skip */ } else
   try {
-    showStatus("שולף ביצועי סקטורים מ-Yahoo Finance...", "success");
+    stepProgress("סקטורים — Yahoo Finance ETF");
     // Collect all unique ETF symbols from all regions
     const allSectorETFs = [];
     const etfToSector = {}; // map etf → [{region, sectorName}]
@@ -1068,7 +1087,7 @@ async function fetchAllData(only) {
   // 5. BOI — Bank of Israel representative exchange rates (שער יציג)
   if (!has("currencies") && !has("macro")) { /* skip */ } else
   try {
-    showStatus("שולף שערי יציג מבנק ישראל...", "success");
+    stepProgress("מטבעות — בנק ישראל (שער יציג)");
     const boiRates = await fetchBOI();
     if (boiRates && boiRates.length > 0) {
       let boiOk = 0;
@@ -1113,14 +1132,17 @@ async function fetchAllData(only) {
   // 6. World Bank — Macro data: GDP, inflation, unemployment (free, no key)
   if (!has("macro")) { /* skip */ } else
   try {
-    showStatus("שולף נתוני מאקרו מ-World Bank...", "success");
+    stepProgress("מאקרו — World Bank (GDP, אינפלציה, חוב)");
     const wb = await fetchWorldBank();
     let wbOk = 0;
     Object.entries(wb).forEach(([region, data]) => {
       if (!STATE.macro[region]) STATE.macro[region] = {};
-      if (data.gdp_growth !== undefined) { STATE.macro[region].gdp_growth = data.gdp_growth.toFixed(2); wbOk++; }
-      if (data.inflation !== undefined) { STATE.macro[region].inflation = data.inflation.toFixed(2); wbOk++; }
-      if (data.unemployment !== undefined) { STATE.macro[region].unemployment = data.unemployment.toFixed(2); wbOk++; }
+      if (data.gdp_growth !== undefined)    { STATE.macro[region].gdp_growth = data.gdp_growth.toFixed(2); wbOk++; }
+      if (data.inflation !== undefined)     { STATE.macro[region].inflation = data.inflation.toFixed(2); wbOk++; }
+      if (data.unemployment !== undefined)  { STATE.macro[region].unemployment = data.unemployment.toFixed(2); wbOk++; }
+      if (data.debt_to_gdp !== undefined)   { STATE.macro[region].debt_to_gdp = data.debt_to_gdp.toFixed(1); wbOk++; }
+      if (data.gdp_absolute !== undefined)  { STATE.macro[region].gdp_absolute = Math.round(data.gdp_absolute).toString(); wbOk++; }
+      if (data.gdp_per_capita !== undefined){ STATE.macro[region].gdp_per_capita = Math.round(data.gdp_per_capita).toString(); wbOk++; }
     });
     if (wbOk > 0) { updateTimestamp("macro"); successCount++; }
     else errors.push("מאקרו: World Bank");
@@ -1129,7 +1151,7 @@ async function fetchAllData(only) {
   // 7. FRED — Macro data override with more current data (optional, needs key)
   if (has("macro") && STATE.fredApiKey) {
     try {
-      showStatus("שולף נתוני מאקרו מ-FRED...", "success");
+      stepProgress("מאקרו — FRED ריביות ואינפלציה");
       const fred = await fetchAllFRED();
       let macroOk = 0;
       // Map FRED results to STATE.macro
@@ -1185,7 +1207,7 @@ async function fetchAllData(only) {
   // 8. FRED — 10Y Bond yields (optional, needs key)
   if (has("macro") && STATE.fredApiKey) {
     try {
-      showStatus("שולף תשואות אג״ח 10Y מ-FRED...", "success");
+      stepProgress("מאקרו — תשואות אג״ח 10Y מ-FRED");
       const bonds = await fetchFREDBonds();
       let bondOk = 0;
       Object.entries(bonds).forEach(([region, data]) => {
@@ -1200,7 +1222,7 @@ async function fetchAllData(only) {
   // 9. Fill missing macro fields via Yahoo Finance proxies
   if (!has("macro")) { /* skip */ } else
   try {
-    showStatus("משלים נתוני מאקרו חסרים...", "success");
+    stepProgress("מאקרו — השלמות מ-Yahoo");
     // Bond ETFs as proxies for 10Y yields when FRED is unavailable
     const macroProxies = [
       { sym: "^IRX",    region: "US", field: "interest_rate" },  // 13-week T-bill ≈ fed funds
@@ -1225,20 +1247,25 @@ async function fetchAllData(only) {
   // 10. Scrape macro data from Trading Economics (try matrix first, then individual pages)
   if (!has("macro")) { /* skip */ } else
   try {
-    showStatus("משלים נתוני מאקרו מ-Trading Economics...", "success");
+    stepProgress("מאקרו — Trading Economics (ריביות, אג״ח 10Y, חוב)");
     let macroScraped = await fetchMacroScrape();
     let scraped = 0;
-    // Check if matrix worked; if not, try individual pages
-    const hasData = Object.values(macroScraped).some(d => d.interest_rate || d.inflation || d.unemployment);
-    if (!hasData) {
-      console.log("Matrix failed, trying individual TE pages...");
-      macroScraped = await fetchMacroTE();
-    }
+    // Always also hit individual TE pages — they have bond_10y + debt_to_gdp which matrix lacks
+    const teFull = await fetchMacroTE();
+    // Merge: individual TE pages fill gaps in matrix results
+    Object.entries(teFull).forEach(([region, data]) => {
+      if (!macroScraped[region]) macroScraped[region] = {};
+      Object.entries(data).forEach(([field, val]) => {
+        if (macroScraped[region][field] == null) macroScraped[region][field] = val;
+      });
+    });
     Object.entries(macroScraped).forEach(([region, data]) => {
       if (!STATE.macro[region]) STATE.macro[region] = {};
-      if (data.interest_rate && !STATE.macro[region].interest_rate) { STATE.macro[region].interest_rate = data.interest_rate.toFixed(2); scraped++; }
-      if (data.inflation && !STATE.macro[region].inflation) { STATE.macro[region].inflation = data.inflation.toFixed(2); scraped++; }
-      if (data.unemployment && !STATE.macro[region].unemployment) { STATE.macro[region].unemployment = data.unemployment.toFixed(2); scraped++; }
+      if (data.interest_rate != null && !STATE.macro[region].interest_rate) { STATE.macro[region].interest_rate = data.interest_rate.toFixed(2); scraped++; }
+      if (data.inflation     != null && !STATE.macro[region].inflation)     { STATE.macro[region].inflation = data.inflation.toFixed(2); scraped++; }
+      if (data.unemployment  != null && !STATE.macro[region].unemployment)  { STATE.macro[region].unemployment = data.unemployment.toFixed(2); scraped++; }
+      if (data.bond_10y      != null && !STATE.macro[region].bond_10y)      { STATE.macro[region].bond_10y = data.bond_10y.toFixed(2); scraped++; }
+      if (data.debt_to_gdp   != null && !STATE.macro[region].debt_to_gdp)   { STATE.macro[region].debt_to_gdp = data.debt_to_gdp.toFixed(1); scraped++; }
     });
     if (scraped > 0) { updateTimestamp("macro"); successCount++; }
   } catch(e) { console.warn("Macro scrape:", e.message); }
@@ -1246,7 +1273,7 @@ async function fetchAllData(only) {
   // 11. Fetch P/E for index ETFs — Yahoo quoteSummary (primary) + stockanalysis fallback
   if (!has("indices")) { /* skip */ } else
   try {
-    showStatus("שולף מכפילים למדדים...", "success");
+    stepProgress("מדדים — מכפילי P/E");
     const etfPEList = INDICES.filter(i => i.sa && i.saType === "e");
     // Fetch in parallel batches of 3 to be polite
     for (let i = 0; i < etfPEList.length; i += 3) {
@@ -1266,7 +1293,7 @@ async function fetchAllData(only) {
   // 11b. Fetch P/E for SECTOR ETFs (per region:name)
   if (!has("sectors")) { /* skip */ } else
   try {
-    showStatus("שולף P/E לסקטורים...", "success");
+    stepProgress("סקטורים — P/E לפי ETF");
     const allSectorRegional = [];
     Object.entries(SECTOR_REGIONS).forEach(([regionKey, r]) => r.sectors.forEach(s => {
       if (s.etf) allSectorRegional.push({ region: regionKey, name: s.name, etf: s.etf });
@@ -1294,7 +1321,7 @@ async function fetchAllData(only) {
   // 12. FRED — Yield Spread 10Y-2Y (auto-calc for fear screen)
   if (has("fear") && STATE.fredApiKey) {
     try {
-      showStatus("מחשב פער עקום תשואות 10Y-2Y...", "success");
+      stepProgress("פחד — פער עקום תשואות 10Y-2Y");
       const [dgs10, dgs2] = await Promise.all([
         fredFetch("DGS10").catch(() => null),
         fredFetch("DGS2").catch(() => null),
@@ -1311,7 +1338,7 @@ async function fetchAllData(only) {
   // 12b. Fetch % S&P500 stocks above 200-day MA (via Yahoo: ^SPXA200R)
   if (!has("fear")) { /* skip */ } else
   try {
-    showStatus("שולף % מניות מעל ממוצע 200 יום...", "success");
+    stepProgress("פחד — % מניות מעל MA200");
     const ma200q = await yahooQuote("^SPXA200R").catch(() => null);
     if (ma200q && ma200q.price) {
       if (!STATE.fear.sp500_above_200ma) STATE.fear.sp500_above_200ma = {};
@@ -1323,7 +1350,7 @@ async function fetchAllData(only) {
   // 12c. Extended fear indicators — CNN Fear&Greed + FRED-based
   if (has("fear")) {
     try {
-      showStatus("שולף מדדי סנטימנט מתקדמים...", "success");
+      stepProgress("פחד — CNN Fear&Greed + מדדי FRED");
       const [fg, fredFear] = await Promise.all([
         fetchCNNFearGreed(),
         fetchExtendedFearFRED(),
@@ -1356,7 +1383,7 @@ async function fetchAllData(only) {
   // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com (SPY only — live)
   if (!has("indices")) { /* skip */ } else
   try {
-    showStatus("שולף Shiller CAPE ומכפילים...", "success");
+    stepProgress("מדדים — Shiller CAPE ו-P/E היסטורי");
     const multpl = await fetchMultpl();
     if (multpl.sp500_pe && STATE.indices.SPY) {
       STATE.indices.SPY.pe_current = multpl.sp500_pe.toFixed(2);
@@ -1384,7 +1411,8 @@ async function fetchAllData(only) {
   }
 
   saveState();
-  hideLoadingBar();
+  setProgress(100, "הושלם ✓");
+  setTimeout(hideLoadingBar, 600);
   ["macro","indices","sectors","commodities","currencies","fear","portfolio"].forEach(s => hideSectionLoading(s));
   if (isPartial) {
     // Render only the changed sections
@@ -1426,6 +1454,17 @@ async function scanStock() {
     q = await yahooQuote(sym);
     if (q && q.price) source = "Yahoo Finance";
   } catch(e) { console.warn("Yahoo scanner:", e); }
+
+  // Israeli (.TA) stocks are quoted in אגורות — convert to ₪ (÷ 100)
+  const isIsraeliTicker = sym.includes('.TA');
+  if (isIsraeliTicker && q && q.price) {
+    q.price = q.price / 100;
+    if (q.open) q.open = q.open / 100;
+    if (q.high) q.high = q.high / 100;
+    if (q.low)  q.low  = q.low  / 100;
+    if (q.fiftyTwoWeekHigh) q.fiftyTwoWeekHigh = q.fiftyTwoWeekHigh / 100;
+    if (q.fiftyTwoWeekLow)  q.fiftyTwoWeekLow  = q.fiftyTwoWeekLow  / 100;
+  }
 
   // Fallback to Twelve Data
   if (!q && STATE.tdApiKey) {
