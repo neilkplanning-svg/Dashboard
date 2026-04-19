@@ -63,6 +63,8 @@ function checkAuth() {
     if (!STATE.tdApiKey) STATE.tdApiKey = NK_KEYS.td;
     if (!STATE.apiKey) STATE.apiKey = NK_KEYS.fmp;
     if (!STATE.fredApiKey) STATE.fredApiKey = NK_KEYS.fred;
+    if (!STATE.avApiKey) STATE.avApiKey = NK_KEYS.av;
+    if (!STATE.polygonApiKey) STATE.polygonApiKey = NK_KEYS.polygon;
     document.getElementById("authOverlay").classList.add("hidden");
     document.getElementById("authLabel").textContent = "👤 ניל";
   } else if (STATE.authMode === "guest") {
@@ -78,8 +80,8 @@ function renderApiSources() {
   if (!el) return;
   // Show priority badges only
   el.innerHTML = API_SOURCES.filter(s => s.priority > 0).sort((a,b) => b.priority - a.priority).map(s => {
-    const hasKey = s.id === "td" ? !!STATE.tdApiKey : s.id === "fmp" ? !!STATE.apiKey : s.id === "fred" ? !!STATE.fredApiKey : true;
-    const active = !s.keyRequired || hasKey;
+    const hasKey = s.stateKey ? !!STATE[s.stateKey] : true;
+    const active = !s.stateKey || hasKey;
     return `<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${active ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.1)'};color:${active ? 'var(--green)' : 'var(--text-ghost)'}">${s.name} ${active ? '✓' : '🔒'}</span>`;
   }).join('');
 }
