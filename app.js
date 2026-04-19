@@ -36,6 +36,8 @@ function doAuth() {
     STATE.tdApiKey = NK_KEYS.td;
     STATE.apiKey = NK_KEYS.fmp;
     STATE.fredApiKey = NK_KEYS.fred;
+    STATE.avApiKey = NK_KEYS.av;
+    STATE.polygonApiKey = NK_KEYS.polygon;
     saveState();
     document.getElementById("authOverlay").classList.add("hidden");
     document.getElementById("authLabel").textContent = "👤 ניל";
@@ -298,16 +300,208 @@ function exportCSV() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function showStatus(msg, type) {
-  const bar = document.getElementById("statusBar");
-  bar.textContent = msg;
-  bar.className = "status-bar " + type;
-  bar.classList.remove("hidden");
-  setTimeout(() => bar.classList.add("hidden"), type === "error" ? 8000 : 3000);
+  // Toast-based notification (non-blocking)
+  const container = document.getElementById("toastContainer");
+  if (!container) return;
+  const t = document.createElement("div");
+  t.className = "toast toast-" + (type || "info");
+  t.textContent = msg;
+  container.appendChild(t);
+  const ttl = type === "error" ? 6000 : 3000;
+  setTimeout(() => {
+    t.classList.add("toast-out");
+    setTimeout(() => t.remove(), 220);
+  }, ttl);
 }
 
 function switchTab(tabId) {
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tabId));
+  document.querySelectorAll(".bottom-nav-item").forEach(t => t.classList.toggle("active", t.dataset.tab === tabId));
   document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "panel-" + tabId));
+  // Scroll content to top on tab switch (mobile UX)
+  try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THEME TOGGLE (Light / Dark) — persisted in localStorage
+// ═══════════════════════════════════════════════════════════════════════════════
+const THEME_KEY = "inv-dashboard-theme";
+function applyTheme(theme) {
+  if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+  const next = cur === "light" ? "dark" : "light";
+  applyTheme(next);
+  try { localStorage.setItem(THEME_KEY, next); } catch(e) {}
+}
+(function initTheme(){
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch(e) {}
+  if (!saved && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) saved = "light";
+  applyTheme(saved || "dark");
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMMAND PALETTE (Ctrl+K quick search)
+// ═══════════════════════════════════════════════════════════════════════════════
+let _cmdIndex = [];
+let _cmdActive = 0;
+
+function buildCmdIndex() {
+  const idx = [];
+  // Tabs
+  [
+    { id: "macro", icon: "🌍", label: "מאקרו" },
+    { id: "indices", icon: "📊", label: "מדדים" },
+    { id: "sectors", icon: "🏭", label: "סקטורים" },
+    { id: "commodities", icon: "🛢️", label: "סחורות ומט״ח" },
+    { id: "fear", icon: "😰", label: "פחד וסנטימנט" },
+    { id: "scanner", icon: "🔎", label: "סקרינר" },
+    { id: "portfolio", icon: "💼", label: "תיק אישי" },
+  ].forEach(t => idx.push({ type: "tab", group: "עמודים", icon: t.icon, label: t.label, action: () => switchTab(t.id) }));
+
+  // Indices
+  if (typeof INDICES !== "undefined") INDICES.forEach(i =>
+    idx.push({ type: "index", group: "מדדים", icon: "📊", label: i.name, meta: i.region || "", action: () => { switchTab("indices"); openChart(i.sym, i.name, i.key); } })
+  );
+  // Commodities
+  if (typeof COMMODITIES !== "undefined") COMMODITIES.forEach(c =>
+    idx.push({ type: "commodity", group: "סחורות", icon: "🛢️", label: c.name, meta: c.unit || "", action: () => { switchTab("commodities"); openChart(c.sym, c.name); } })
+  );
+  // Currencies
+  if (typeof CURRENCIES !== "undefined") CURRENCIES.forEach(c =>
+    idx.push({ type: "currency", group: "מטבעות", icon: "💱", label: `${c.key} — ${c.name}`, action: () => { switchTab("commodities"); openChart(c.yahoo || c.key, c.name); } })
+  );
+  // Portfolio
+  (STATE.portfolio || []).forEach(s =>
+    idx.push({ type: "stock", group: "תיק אישי", icon: "💼", label: `${s.symbol} — ${s.name || ""}`, meta: s.sector || "", action: () => { switchTab("portfolio"); } })
+  );
+  // Actions
+  idx.push({ type: "action", group: "פעולות", icon: "🔄", label: "משוך נתונים מחדש", action: () => fetchAllData() });
+  idx.push({ type: "action", group: "פעולות", icon: "🌙", label: "החלף עיצוב (כהה/בהיר)", action: () => toggleTheme() });
+  idx.push({ type: "action", group: "פעולות", icon: "⚙️", label: "הגדרות API", action: () => toggleApiBar() });
+  idx.push({ type: "action", group: "פעולות", icon: "💾", label: "ייצוא/ייבוא נתונים", action: () => toggleDataBar() });
+  idx.push({ type: "action", group: "פעולות", icon: "📤", label: "ייצוא JSON", action: () => exportData() });
+  idx.push({ type: "action", group: "פעולות", icon: "📊", label: "ייצוא תיק ל-CSV", action: () => exportCSV() });
+
+  _cmdIndex = idx;
+}
+
+function openCmd() {
+  buildCmdIndex();
+  const ov = document.getElementById("cmdOverlay");
+  const input = document.getElementById("cmdInput");
+  ov.classList.remove("hidden");
+  input.value = "";
+  _cmdActive = 0;
+  renderCmdResults();
+  setTimeout(() => input.focus(), 10);
+}
+
+function closeCmd() {
+  document.getElementById("cmdOverlay").classList.add("hidden");
+}
+
+function renderCmdResults() {
+  const q = (document.getElementById("cmdInput").value || "").trim().toLowerCase();
+  const el = document.getElementById("cmdResults");
+  let items = _cmdIndex;
+  if (q) {
+    items = _cmdIndex.filter(it => (it.label + " " + (it.meta || "") + " " + it.group).toLowerCase().includes(q));
+  }
+  items = items.slice(0, 40);
+  if (!items.length) {
+    el.innerHTML = `<div class="cmd-empty">אין תוצאות עבור "${q}"</div>`;
+    return;
+  }
+  // Group by group name
+  const groups = {};
+  items.forEach((it, i) => {
+    if (!groups[it.group]) groups[it.group] = [];
+    groups[it.group].push({ ...it, _i: i });
+  });
+  _cmdActive = Math.min(_cmdActive, items.length - 1);
+  let html = "";
+  let globalIdx = 0;
+  Object.entries(groups).forEach(([g, arr]) => {
+    html += `<div class="cmd-group-label">${g}</div>`;
+    arr.forEach(it => {
+      const isActive = globalIdx === _cmdActive;
+      html += `<div class="cmd-item ${isActive ? 'cmd-active' : ''}" data-i="${globalIdx}" onclick="runCmd(${globalIdx})">
+        <span class="cmd-item-icon">${it.icon}</span>
+        <span>${it.label}</span>
+        ${it.meta ? `<span class="cmd-item-meta">${it.meta}</span>` : ""}
+      </div>`;
+      globalIdx++;
+    });
+  });
+  el.innerHTML = html;
+  // Scroll active into view
+  const active = el.querySelector(".cmd-active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+  // Stash flat list for keyboard access
+  window._cmdFlat = items;
+}
+
+function runCmd(i) {
+  const list = window._cmdFlat || [];
+  const item = list[i];
+  if (!item) return;
+  closeCmd();
+  setTimeout(() => item.action && item.action(), 60);
+}
+
+function onCmdKey(e) {
+  const list = window._cmdFlat || [];
+  if (e.key === "Escape") { e.preventDefault(); closeCmd(); return; }
+  if (e.key === "Enter")  { e.preventDefault(); runCmd(_cmdActive); return; }
+  if (e.key === "ArrowDown") { e.preventDefault(); _cmdActive = Math.min(_cmdActive + 1, list.length - 1); renderCmdResults(); return; }
+  if (e.key === "ArrowUp")   { e.preventDefault(); _cmdActive = Math.max(_cmdActive - 1, 0); renderCmdResults(); return; }
+}
+
+// Global Ctrl+K / Cmd+K binding
+document.addEventListener("keydown", function(e) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+    e.preventDefault();
+    openCmd();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SKELETON + INLINE LOADING BAR
+// ═══════════════════════════════════════════════════════════════════════════════
+function showLoadingBar() {
+  const b = document.getElementById("loadingBar");
+  if (b) b.classList.remove("hidden");
+}
+function hideLoadingBar() {
+  const b = document.getElementById("loadingBar");
+  if (b) b.classList.add("hidden");
+}
+function showSectionLoading(section) {
+  const panel = document.getElementById("panel-" + section);
+  if (panel) panel.classList.add("section-loading");
+}
+function hideSectionLoading(section) {
+  const panel = document.getElementById("panel-" + section);
+  if (panel) panel.classList.remove("section-loading");
+}
+
+function renderSkeletonTable(tableId, rows, cols) {
+  const t = document.getElementById(tableId);
+  if (!t) return;
+  let html = "<tbody>";
+  for (let i = 0; i < rows; i++) {
+    html += "<tr>";
+    for (let j = 0; j < cols; j++) {
+      html += `<td><span class="skeleton" style="width:${40 + Math.random()*50}px"></span></td>`;
+    }
+    html += "</tr>";
+  }
+  html += "</tbody>";
+  t.innerHTML = html;
 }
 
 function toggleApiBar() {
@@ -513,7 +707,7 @@ function renderIndices() {
   INDICES.forEach(idx => {
     const escapedName = idx.name.replace(/'/g, "\\'").replace(/"/g, "&quot;");
     // Pass index key — openChart will look up INDEX_FUNDS internally (avoids JSON in onclick)
-    html += `<tr><td class="label"><a href="#" onclick="openChart('${idx.sym}','${escapedName}','${idx.key}');return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות מחקות">${idx.name}</a></td><td>${idx.region}</td>`;
+    html += `<tr><td class="label"><a href="#" onclick="openChart('${idx.sym}','${escapedName}','${idx.key}');return false" style="color:var(--accent);text-decoration:none;cursor:pointer" title="לחץ לגרף + קרנות מחקות">${idx.name}</a></td><td data-label="אזור">${idx.region}</td>`;
     INDEX_FIELDS.forEach(f => {
       if (f.ref) {
         const ref = getRefChange("indices", idx.key);
@@ -521,17 +715,17 @@ function renderIndices() {
           const cls = colorClass(ref.change);
           const dt = new Date(ref.date);
           const dateStr = dt.toLocaleDateString("he-IL");
-          html += `<td><span class="${cls}">${fmtNum(ref.change)}%</span><span class="ref-date">${dateStr} (${fmtNum(ref.refPrice)})</span></td>`;
+          html += `<td data-label="${f.label}"><span class="${cls}">${fmtNum(ref.change)}%</span><span class="ref-date">${dateStr} (${fmtNum(ref.refPrice)})</span></td>`;
         } else {
-          html += `<td>—</td>`;
+          html += `<td data-label="${f.label}">—</td>`;
         }
       } else {
-        html += `<td>${makeCell("indices", idx.key, f.key, STATE.indices[idx.key]?.[f.key], f.color)}</td>`;
+        html += `<td data-label="${f.label}">${makeCell("indices", idx.key, f.key, STATE.indices[idx.key]?.[f.key], f.color)}</td>`;
       }
     });
     // Reference point button
     const hasRef = STATE.refPoints?.indices?.[idx.key];
-    html += `<td>`;
+    html += `<td data-label="רפרנס">`;
     html += `<button class="ref-btn${hasRef ? ' active' : ''}" onclick="setRefPoint('indices','${idx.key}')" title="סמן מחיר נוכחי כרפרנס">📌</button>`;
     if (hasRef) html += ` <button class="ref-btn" onclick="clearRefPoint('indices','${idx.key}')" title="נקה רפרנס">✕</button>`;
     html += `</td>`;
@@ -563,6 +757,7 @@ function renderSectors() {
   sectors.forEach(sec => {
     const sectorName = sec.name;
     const etf = sec.etf || etfs[sectorName];
+    const stateKey = `${SECTOR_ACTIVE_REGION}:${sectorName}`;
     const escapedName = sectorName.replace(/'/g, "\\'").replace(/"/g, "&quot;");
     // Store funds in window._sectorFunds map to avoid JSON in onclick
     if (!window._sectorFunds) window._sectorFunds = {};
@@ -577,7 +772,7 @@ function renderSectors() {
         if (sec.funds?.ils?.length) fundsList.push(...sec.funds.ils);
         html += `<td style="font-family:var(--sans);font-size:11px;color:var(--text-faint)">${fundsList.length ? fundsList.join(', ') : '—'}</td>`;
       } else {
-        html += `<td>${makeCell("sectors", sectorName, f.key, STATE.sectors[sectorName]?.[f.key], f.color)}</td>`;
+        html += `<td>${makeCell("sectors", stateKey, f.key, STATE.sectors[stateKey]?.[f.key], f.color)}</td>`;
       }
     });
     html += `</tr>`;
@@ -683,7 +878,7 @@ function renderPortfolio() {
   let totalValue = 0, totalPnl = 0;
   let html = `<div class="table-wrap"><table>
     <thead><tr>
-      <th>סימול</th><th>שם</th><th>כמות</th><th>מחיר ממוצע</th><th>מחיר נוכחי</th>
+      <th>סימול / שם</th><th>כמות</th><th>מחיר ממוצע</th><th>מחיר נוכחי</th>
       <th>שינוי יומי %</th><th>רווח/הפסד</th><th>רווח %</th><th>שווי</th><th>סקטור</th><th>הערות</th><th></th>
     </tr></thead><tbody>`;
 
@@ -696,23 +891,22 @@ function renderPortfolio() {
     totalPnl += pnl;
 
     html += `<tr>
-      <td class="label">${s.symbol}</td>
-      <td>${s.name || "—"}</td>
-      <td><span class="cell-val" onclick="editPortfolioField(${i},'shares')">${s.shares}</span></td>
-      <td><span class="cell-val" onclick="editPortfolioField(${i},'avgPrice')">${fmtNum(s.avgPrice)}</span></td>
-      <td>${cp ? fmtNum(cp) : "—"}</td>
-      <td class="${colorClass(s.dayChange)}">${s.dayChange ? fmtNum(s.dayChange) + "%" : "—"}</td>
-      <td class="${colorClass(pnl)}">${cp ? "$" + fmtNum(pnl, 0) : "—"}</td>
-      <td class="${colorClass(pnlPct)}">${cp ? fmtNum(pnlPct) + "%" : "—"}</td>
-      <td>${cp ? "$" + fmtNum(val, 0) : "—"}</td>
-      <td style="font-size:11px">${s.sector || "—"}</td>
-      <td><input class="notes-input" value="${(s.notes||'').replace(/"/g,'&quot;')}" onchange="updateNotes(${i},this.value)" placeholder="הערה..." /></td>
-      <td><button class="btn-danger" onclick="removeStock(${i})">✕</button></td>
+      <td class="label">${s.symbol} <span style="font-weight:400;color:var(--text-faint);font-size:12px">${s.name ? '· ' + s.name : ''}</span></td>
+      <td data-label="כמות"><span class="cell-val" onclick="editPortfolioField(${i},'shares')">${s.shares}</span></td>
+      <td data-label="מחיר ממוצע"><span class="cell-val" onclick="editPortfolioField(${i},'avgPrice')">${fmtNum(s.avgPrice)}</span></td>
+      <td data-label="מחיר נוכחי">${cp ? fmtNum(cp) : "—"}</td>
+      <td data-label="שינוי יומי" class="${colorClass(s.dayChange)}">${s.dayChange ? fmtNum(s.dayChange) + "%" : "—"}</td>
+      <td data-label="רווח/הפסד" class="${colorClass(pnl)}">${cp ? "$" + fmtNum(pnl, 0) : "—"}</td>
+      <td data-label="רווח %" class="${colorClass(pnlPct)}">${cp ? fmtNum(pnlPct) + "%" : "—"}</td>
+      <td data-label="שווי">${cp ? "$" + fmtNum(val, 0) : "—"}</td>
+      <td data-label="סקטור" style="font-size:11px">${s.sector || "—"}</td>
+      <td data-label="הערות"><input class="notes-input" value="${(s.notes||'').replace(/"/g,'&quot;')}" onchange="updateNotes(${i},this.value)" placeholder="הערה..." /></td>
+      <td data-label=""><button class="btn-danger" onclick="removeStock(${i})">✕ הסר</button></td>
     </tr>`;
   });
 
   html += `</tbody><tfoot><tr class="tfoot-total">
-    <td colspan="8" style="text-align:left;font-family:var(--sans)">סה״כ שווי תיק</td>
+    <td colspan="7" style="text-align:left;font-family:var(--sans)">סה״כ שווי תיק</td>
     <td style="color:var(--accent)">$${totalValue.toLocaleString("en-US",{maximumFractionDigits:0})}</td>
     <td colspan="3"></td>
   </tr></tfoot></table></div>`;

@@ -8,6 +8,8 @@ const NK_KEYS = {
   td: "fac984fd95b643279e8a6d507a389886",
   fmp: "g5MmG673ei75anACkt6zBI1mZAjcn58b",
   fred: "ff008bbe0b491957a71206022b84b166",
+  av: "QNE64AX0O0JJWO9V",
+  polygon: "cAw24Z7RRQJeCjoUYqni0WpfTT2L1apN",
 };
 
 // ── API Sources Registry ───────────────────────────────────────────────────
@@ -208,6 +210,26 @@ const INDEX_FUNDS = {
   EEM:   { usd: ["EEM","VWO","IEMG"], ils: ["מגדל שווקים מתפתחים"] },
 };
 
+// Best-effort fallback long-term averages — used only when live source has no value.
+// User can override any field (manual cells). Values are approximate market consensus
+// (Bloomberg/MSCI/Siblis Research, late 2024–early 2026 era).
+const INDEX_PE_DEFAULTS = {
+  SPY:   { pe_historical_avg: "16.50", shiller_cape: "33.00" },
+  QQQ:   { pe_historical_avg: "25.00", shiller_cape: "37.00" },
+  DIA:   { pe_historical_avg: "17.00", shiller_cape: "27.00" },
+  IWM:   { pe_historical_avg: "22.00", shiller_cape: "25.00" },
+  EWU:   { pe_historical_avg: "14.00", shiller_cape: "17.00" },
+  EWG:   { pe_historical_avg: "14.00", shiller_cape: "18.00" },
+  EWQ:   { pe_historical_avg: "15.00", shiller_cape: "22.00" },
+  EWJ:   { pe_historical_avg: "16.00", shiller_cape: "22.00" },
+  FXI:   { pe_historical_avg: "12.00", shiller_cape: "12.00" },
+  INDA:  { pe_historical_avg: "20.00", shiller_cape: "26.00" },
+  EIS:   { pe_historical_avg: "14.00", shiller_cape: "18.00" },
+  TA125: { pe_historical_avg: "13.50", shiller_cape: "18.00" },
+  TA35:  { pe_historical_avg: "12.50", shiller_cape: "16.00" },
+  EEM:   { pe_historical_avg: "14.00", shiller_cape: "15.00" },
+};
+
 const INDEX_FIELDS = [
   { key: "price", label: "מחיר", color: false },
   { key: "ytd", label: "שינוי יומי %", color: true, tooltip: "שינוי מ-Close אתמול" },
@@ -334,13 +356,13 @@ const CURRENCIES = [
 // ── Fear & Sentiment (Buffett-inspired) ───────────────────────────────────
 const FEAR_INDICATORS = [
   { key: "vix", label: "VIX (מדד הפחד)", desc: "<20 רגוע, 20-30 חשש, >30 פאניקה", type: "vix" },
-  { key: "buffett_indicator", label: "Buffett Indicator", desc: "Total Market Cap / GDP · >100% = שוק יקר · currentmarketvaluation.com", type: "plain", manual: true },
-  { key: "fear_greed", label: "Fear & Greed Index", desc: "0=פחד קיצוני, 100=חמדנות קיצונית · cnn.com/markets/fear-and-greed", type: "bar", manual: true },
+  { key: "buffett_indicator", label: "Buffett Indicator", desc: "Wilshire 5000 / GDP · >100% = שוק יקר · מחושב מ-FRED", type: "plain" },
+  { key: "fear_greed", label: "Fear & Greed Index", desc: "0=פחד קיצוני, 100=חמדנות קיצונית · cnn.com/markets/fear-and-greed", type: "bar" },
   { key: "yield_10y_us", label: "תשואת 10Y US", desc: "ריבית ארוכה · עולה = לחץ על מניות", type: "plain" },
   { key: "yield_spread", label: "פער 10Y-2Y US", desc: "שלילי = אזהרת מיתון · מחושב אוטומטית מ-FRED", type: "spread" },
   { key: "put_call", label: "Put/Call Ratio", desc: ">1 דובי, <0.7 שורי · cboe.com", type: "plain", manual: true },
-  { key: "credit_spread", label: "Credit Spread (HY)", desc: "פער תשואה בין אג״ח זבל לממשלתי · גבוה = סיכון", type: "plain", manual: true },
-  { key: "margin_debt", label: "Margin Debt / GDP", desc: "רמת מינוף בשוק · גבוה = סיכון בועה · finra.org", type: "plain", manual: true },
+  { key: "credit_spread", label: "Credit Spread (HY)", desc: "פער תשואה בין אג״ח זבל לממשלתי · BAML HY OAS מ-FRED", type: "plain" },
+  { key: "margin_debt", label: "Margin Debt / GDP", desc: "רמת מינוף בשוק · BOGZ1FL663067003Q / GDP מ-FRED", type: "plain" },
   { key: "sp500_above_200ma", label: "% מניות מעל MA200", desc: "מעל 70% = שוק חזק, מתחת ל-30% = חולשה · ^SPXA200R", type: "plain" },
   { key: "us_dollar_index", label: "מדד הדולר (DXY)", desc: "דולר חזק = לחץ על שווקים מתפתחים", type: "plain" },
 ];

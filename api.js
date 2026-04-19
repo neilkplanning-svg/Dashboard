@@ -367,27 +367,28 @@ async function fetchSAOverview(type, symbol) {
 }
 
 async function fetchETFMetrics(symbol) {
-  // Primary: Yahoo v7 (reliable) → v10 fallback
-  try {
-    const ys = await yahooMetrics(symbol);
-    if (ys && ys.pe) return { pe: ys.pe, forwardPE: ys.forwardPE, beta: ys.beta, divYield: ys.divYield, pb: ys.pb };
-  } catch(e) {}
-  // Fallback: stockanalysis.com — try many field name variants
-  try {
-    const data = await fetchSAOverview("e", symbol);
-    const d = data?.data || data;
-    if (!d) return {};
-    const saNum = v => v == null ? null : parseFloat(String(v).replace(/[^0-9.-]/g, "")) || null;
-    return {
-      pe:         saNum(d.peRatio) || saNum(d.pe) || saNum(d.priceEarnings) || saNum(d.trailingPE) || null,
-      forwardPE:  saNum(d.forwardPE) || saNum(d.forwardPeRatio) || null,
-      divYield:   d.dividendYield || d.divYield || null,
-      beta:       saNum(d.beta) || null,
-      pb:         saNum(d.pb) || saNum(d.priceToBook) || null,
-      holdings:   d.holdingsCount || d.holdings || null,
-      expenseRatio: saNum(d.expenseRatio) || null,
-    };
-  } catch(e) { return {}; }
+  // Try Yahoo and SA in parallel and merge — Yahoo wins for trailing PE,
+  // SA fills forwardPE / pb gaps when Yahoo doesn't expose them for the ETF.
+  const saNum = v => v == null ? null : parseFloat(String(v).replace(/[^0-9.-]/g, "")) || null;
+  const [ys, saRaw] = await Promise.all([
+    yahooMetrics(symbol).catch(() => null),
+    fetchSAOverview("e", symbol).catch(() => null),
+  ]);
+  const d = saRaw?.data || saRaw || {};
+  const sa = {
+    pe:         saNum(d.peRatio) || saNum(d.pe) || saNum(d.priceEarnings) || saNum(d.trailingPE) || null,
+    forwardPE:  saNum(d.forwardPE) || saNum(d.forwardPeRatio) || null,
+    divYield:   d.dividendYield || d.divYield || null,
+    beta:       saNum(d.beta) || null,
+    pb:         saNum(d.pb) || saNum(d.priceToBook) || null,
+  };
+  return {
+    pe:        ys?.pe        || sa.pe,
+    forwardPE: ys?.forwardPE || sa.forwardPE,
+    beta:      ys?.beta      || sa.beta,
+    divYield:  ys?.divYield  || sa.divYield,
+    pb:        ys?.pb        || sa.pb,
+  };
 }
 
 async function fetchStockDetails(symbol) {
@@ -468,6 +469,57 @@ async function fetchStockCashFlow(symbol) {
       dividendsPaid: extract(/Dividends Paid[^<]*<[^>]*>([^<]+)/i),
     };
   } catch(e) { return {}; }
+}
+
+// ── Finviz fallback for US stocks (snapshot table scrape) ──────────────
+async function fetchFinvizData(symbol) {
+  // Finviz only carries US-listed tickers
+  if (symbol.includes('.TA')) return {};
+  try {
+    const url = `https://finviz.com/quote.ashx?t=${encodeURIComponent(symbol)}`;
+    const resp = await fetchWithProxy(url, 15000);
+    const text = await resp.text();
+    const out = {};
+    // Finviz field label → our key
+    const fieldMap = {
+      "P/E":          "pe",
+      "Forward P/E":  "forwardPE",
+      "EPS (ttm)":    "eps",
+      "P/B":          "pb",
+      "Beta":         "beta",
+      "Debt/Eq":      "debtEquity",
+      "Dividend TTM": "divYield",
+      "Dividend %":   "divYield",
+      "Market Cap":   "marketCap",
+      "Target Price": "priceTarget",
+      "Recom":        "analystRating",
+      "Sales":        "revenue",
+      "Shs Outstand": "sharesOut",
+      "ROE":          "roe",
+      "ROA":          "roa",
+      "Profit Margin":"profitMargin",
+    };
+    const numericKeys = new Set(["pe","forwardPE","pb","beta","debtEquity","priceTarget","eps","roe","roa","profitMargin"]);
+    const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    Object.entries(fieldMap).forEach(([label, key]) => {
+      // Pattern: <td ...>LABEL</td><td ...><b>VALUE</b></td> (or value without <b>)
+      const re = new RegExp(
+        `<td[^>]*>\\s*${escapeRe(label)}\\s*</td>\\s*<td[^>]*>(?:\\s*<[^>]+>\\s*)*([^<]+)`,
+        'i'
+      );
+      const m = text.match(re);
+      if (!m) return;
+      const raw = m[1].trim();
+      if (raw === "-" || raw === "—" || raw === "") return;
+      if (numericKeys.has(key)) {
+        const num = parseFloat(raw.replace(/[^0-9.\-]/g, ""));
+        if (!isNaN(num)) out[key] = num;
+      } else {
+        out[key] = raw;
+      }
+    });
+    return out;
+  } catch(e) { console.warn("Finviz:", e.message); return {}; }
 }
 
 // ── Bizportal fallback for Israeli stocks (.TA) ─────────────────────────
@@ -557,6 +609,53 @@ async function fetchMacroTE() {
   return results;
 }
 
+// ── CNN Fear & Greed (free, no key) ──────────────────────────────────────
+async function fetchCNNFearGreed() {
+  try {
+    const url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata";
+    const resp = await fetchWithProxy(url, 12000);
+    const text = await resp.text();
+    const json = JSON.parse(text);
+    const score = json?.fear_and_greed?.score;
+    if (score == null) return null;
+    return (Math.round(score * 10) / 10).toString();
+  } catch(e) { console.warn("CNN F&G:", e.message); return null; }
+}
+
+// ── Extended fear indicators via FRED (requires fredApiKey) ──────────────
+async function fetchExtendedFearFRED() {
+  const out = {};
+  if (!STATE.fredApiKey) return out;
+  // HY credit spread (BAML US High Yield Master II OAS) — daily, %
+  try {
+    const cs = await fredFetch("BAMLH0A0HYM2");
+    if (cs) out.credit_spread = cs.value.toFixed(2);
+  } catch(e) {}
+  // Buffett Indicator ≈ Wilshire 5000 (price index ≈ $B mkt cap) / GDP × 100
+  try {
+    const [will, gdp] = await Promise.all([
+      fredFetch("WILL5000PRFC").catch(() => null),
+      fredFetch("GDP").catch(() => null),
+    ]);
+    if (will && gdp) {
+      const ratio = (will.value * 1.05 / gdp.value) * 100;
+      out.buffett_indicator = ratio.toFixed(1);
+    }
+  } catch(e) {}
+  // Margin debt / GDP × 100 — quarterly
+  try {
+    const [md, gdp2] = await Promise.all([
+      fredFetch("BOGZ1FL663067003Q").catch(() => null),  // $M, quarterly
+      fredFetch("GDP").catch(() => null),                // $B annualized
+    ]);
+    if (md && gdp2) {
+      const ratio = (md.value / 1000) / gdp2.value * 100;
+      out.margin_debt = ratio.toFixed(2);
+    }
+  } catch(e) {}
+  return out;
+}
+
 async function fetchMultpl() {
   const results = {};
   try {
@@ -627,9 +726,14 @@ async function fetchAllData(only) {
   const has = (s) => !only || only.includes(s);
   const isPartial = !!only;
 
+  showLoadingBar();
   if (!isPartial) {
-    document.getElementById("loadingOverlay").classList.remove("hidden");
     document.getElementById("fetchBtn").disabled = true;
+    document.getElementById("fetchBtn").textContent = "⏳ טוען...";
+    // Show skeletons in every section we're about to refresh
+    ["macro","indices","sectors","commodities","currencies","fear","portfolio"].forEach(s => showSectionLoading(s));
+  } else {
+    only.forEach(s => showSectionLoading(s));
   }
   let successCount = 0;
   const errors = [];
@@ -746,30 +850,33 @@ async function fetchAllData(only) {
     } catch(e) { console.warn("Historical data:", e.message); }
   }
 
-  // 1c. Fetch YTD and 12M change for sector ETFs
+  // 1c. Fetch YTD and 12M change for sector ETFs (keyed by region:name)
   if (has("sectors") && yahooWorked) {
     try {
       showStatus("שולף שינויים מתחילת שנה ו-12 חודשים לסקטורים...", "success");
-      // Use all regions' sectors for historical data
-      const allSectorPairs = [];
-      Object.values(SECTOR_REGIONS).forEach(r => r.sectors.forEach(s => {
-        if (s.etf && !allSectorPairs.find(p => p[0] === s.name && p[1] === s.etf))
-          allSectorPairs.push([s.name, s.etf]);
+      const allSectorRegional = [];
+      Object.entries(SECTOR_REGIONS).forEach(([regionKey, r]) => r.sectors.forEach(s => {
+        if (s.etf) allSectorRegional.push({ region: regionKey, name: s.name, etf: s.etf });
       }));
-      for (const [sectorName, etfSym] of allSectorPairs) {
+      const uniqueEtfs = [...new Set(allSectorRegional.map(s => s.etf))];
+      const histByEtf = {};
+      for (const etf of uniqueEtfs) {
         try {
-          const ytdChange = await yahooYTDChange(etfSym);
-          if (ytdChange !== null) {
-            if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
-            STATE.sectors[sectorName].change_ytd = ytdChange.toFixed(2);
-          }
-          const m12Change = await yahoo12MChange(etfSym);
-          if (m12Change !== null) {
-            if (!STATE.sectors[sectorName]) STATE.sectors[sectorName] = {};
-            STATE.sectors[sectorName].change_12m = m12Change.toFixed(2);
-          }
-        } catch(e) { console.warn(`Sector hist ${etfSym}:`, e.message); }
+          const [ytd, m12] = await Promise.all([
+            yahooYTDChange(etf).catch(() => null),
+            yahoo12MChange(etf).catch(() => null),
+          ]);
+          histByEtf[etf] = { ytd, m12 };
+        } catch(e) { console.warn(`Sector hist ${etf}:`, e.message); }
       }
+      allSectorRegional.forEach(s => {
+        const h = histByEtf[s.etf];
+        if (!h) return;
+        const key = `${s.region}:${s.name}`;
+        if (!STATE.sectors[key]) STATE.sectors[key] = {};
+        if (h.ytd != null) STATE.sectors[key].change_ytd = h.ytd.toFixed(2);
+        if (h.m12 != null) STATE.sectors[key].change_12m = h.m12.toFixed(2);
+      });
     } catch(e) { console.warn("Sector historical:", e.message); }
   }
 
@@ -926,9 +1033,10 @@ async function fetchAllData(only) {
       const mappings = etfToSector[q.symbol];
       if (!mappings) return;
       mappings.forEach(m => {
-        if (!STATE.sectors[m.name]) STATE.sectors[m.name] = {};
-        STATE.sectors[m.name].ytd = q.change_pct.toFixed(2);
-        STATE.sectors[m.name].price = q.price.toFixed(2);
+        const key = `${m.region}:${m.name}`;
+        if (!STATE.sectors[key]) STATE.sectors[key] = {};
+        STATE.sectors[key].ytd = q.change_pct.toFixed(2);
+        STATE.sectors[key].price = q.price.toFixed(2);
         secOk++;
       });
     });
@@ -947,10 +1055,11 @@ async function fetchAllData(only) {
         sectors = await fmpFetch(`sector-performance-snapshot?date=${y.toISOString().slice(0,10)}`);
       }
       if (Array.isArray(sectors)) {
+        // FMP sector snapshot is US sector data → write to "US:<name>"
         sectors.forEach(s => {
-          const name = s.sector;
-          if (!STATE.sectors[name]) STATE.sectors[name] = {};
-          if (s.averageChange) STATE.sectors[name].ytd = parseFloat(s.averageChange).toFixed(2);
+          const key = `US:${s.sector}`;
+          if (!STATE.sectors[key]) STATE.sectors[key] = {};
+          if (s.averageChange) STATE.sectors[key].ytd = parseFloat(s.averageChange).toFixed(2);
         });
       }
     } catch(e) { console.warn("FMP Sectors:", e.message); }
@@ -1154,26 +1263,31 @@ async function fetchAllData(only) {
     updateTimestamp("indices");
   } catch(e) { console.warn("ETF P/E:", e.message); }
 
-  // 11b. Fetch P/E for SECTOR ETFs
+  // 11b. Fetch P/E for SECTOR ETFs (per region:name)
   if (!has("sectors")) { /* skip */ } else
   try {
     showStatus("שולף P/E לסקטורים...", "success");
-    const allSectorList = [];
-    Object.values(SECTOR_REGIONS).forEach(r => r.sectors.forEach(s => {
-      if (s.etf && !allSectorList.find(x => x.etf === s.etf)) allSectorList.push(s);
+    const allSectorRegional = [];
+    Object.entries(SECTOR_REGIONS).forEach(([regionKey, r]) => r.sectors.forEach(s => {
+      if (s.etf) allSectorRegional.push({ region: regionKey, name: s.name, etf: s.etf });
     }));
-    for (let i = 0; i < allSectorList.length; i += 3) {
-      const batch = allSectorList.slice(i, i + 3);
-      await Promise.all(batch.map(async sec => {
+    const uniqueEtfs = [...new Set(allSectorRegional.map(s => s.etf))];
+    const peByEtf = {};
+    for (let i = 0; i < uniqueEtfs.length; i += 3) {
+      const batch = uniqueEtfs.slice(i, i + 3);
+      await Promise.all(batch.map(async etf => {
         try {
-          const metrics = await fetchETFMetrics(sec.etf);
-          if (metrics.pe) {
-            if (!STATE.sectors[sec.name]) STATE.sectors[sec.name] = {};
-            STATE.sectors[sec.name].pe = parseFloat(metrics.pe).toFixed(2);
-          }
+          const m = await fetchETFMetrics(etf);
+          if (m.pe) peByEtf[etf] = parseFloat(m.pe).toFixed(2);
         } catch(e) {}
       }));
     }
+    allSectorRegional.forEach(s => {
+      if (!peByEtf[s.etf]) return;
+      const key = `${s.region}:${s.name}`;
+      if (!STATE.sectors[key]) STATE.sectors[key] = {};
+      STATE.sectors[key].pe = peByEtf[s.etf];
+    });
     updateTimestamp("sectors");
   } catch(e) { console.warn("Sector P/E:", e.message); }
 
@@ -1206,7 +1320,40 @@ async function fetchAllData(only) {
     }
   } catch(e) { console.warn("MA200:", e.message); }
 
-  // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com
+  // 12c. Extended fear indicators — CNN Fear&Greed + FRED-based
+  if (has("fear")) {
+    try {
+      showStatus("שולף מדדי סנטימנט מתקדמים...", "success");
+      const [fg, fredFear] = await Promise.all([
+        fetchCNNFearGreed(),
+        fetchExtendedFearFRED(),
+      ]);
+      let extOk = 0;
+      if (fg) {
+        if (!STATE.fear.fear_greed) STATE.fear.fear_greed = {};
+        STATE.fear.fear_greed.value = fg;
+        extOk++;
+      }
+      if (fredFear.credit_spread) {
+        if (!STATE.fear.credit_spread) STATE.fear.credit_spread = {};
+        STATE.fear.credit_spread.value = fredFear.credit_spread;
+        extOk++;
+      }
+      if (fredFear.buffett_indicator) {
+        if (!STATE.fear.buffett_indicator) STATE.fear.buffett_indicator = {};
+        STATE.fear.buffett_indicator.value = fredFear.buffett_indicator;
+        extOk++;
+      }
+      if (fredFear.margin_debt) {
+        if (!STATE.fear.margin_debt) STATE.fear.margin_debt = {};
+        STATE.fear.margin_debt.value = fredFear.margin_debt;
+        extOk++;
+      }
+      if (extOk > 0) updateTimestamp("fear");
+    } catch(e) { console.warn("Extended fear:", e.message); }
+  }
+
+  // 13. Scrape S&P 500 P/E and Shiller CAPE from multpl.com (SPY only — live)
   if (!has("indices")) { /* skip */ } else
   try {
     showStatus("שולף Shiller CAPE ומכפילים...", "success");
@@ -1222,7 +1369,23 @@ async function fetchAllData(only) {
     }
   } catch(e) { console.warn("multpl:", e.message); }
 
+  // 13b. Fill missing pe_historical_avg + shiller_cape from static defaults
+  // (user-editable manual fields — only filled if no value yet)
+  if (has("indices") && typeof INDEX_PE_DEFAULTS !== "undefined") {
+    Object.entries(INDEX_PE_DEFAULTS).forEach(([key, defaults]) => {
+      if (!STATE.indices[key]) STATE.indices[key] = {};
+      if (!STATE.indices[key].pe_historical_avg && defaults.pe_historical_avg) {
+        STATE.indices[key].pe_historical_avg = defaults.pe_historical_avg;
+      }
+      if (!STATE.indices[key].shiller_cape && defaults.shiller_cape) {
+        STATE.indices[key].shiller_cape = defaults.shiller_cape;
+      }
+    });
+  }
+
   saveState();
+  hideLoadingBar();
+  ["macro","indices","sectors","commodities","currencies","fear","portfolio"].forEach(s => hideSectionLoading(s));
   if (isPartial) {
     // Render only the changed sections
     only.forEach(s => renderSection(s));
@@ -1230,8 +1393,8 @@ async function fetchAllData(only) {
     showStatus(`✓ ${label} עודכן${only.length > 1 ? "ו" : ""}`, "success");
   } else {
     renderAll();
-    document.getElementById("loadingOverlay").classList.add("hidden");
     document.getElementById("fetchBtn").disabled = false;
+    document.getElementById("fetchBtn").textContent = "🔄 משוך נתונים";
     const proxyLabel = _workingProxy === -2 ? "direct" : _workingProxy >= 0 ? `proxy #${_workingProxy + 1}` : "";
     if (successCount === 0) {
       showStatus(`✕ נכשל: ${errors.join(" | ")}`, "error");
@@ -1285,23 +1448,36 @@ async function scanStock() {
 
   // Fetch extended data from stockanalysis.com + Yahoo historical + Bizportal for .TA
   resultDiv.innerHTML = `<div style="color:var(--text-dim);padding:20px;text-align:center">שולף נתונים מורחבים ל-${sym}...</div>`;
+  let usedFinviz = false;
   try {
     const isIsraeli = sym.includes('.TA');
-    const [det, fc, cf, biz] = await Promise.all([
+    const [det, fc, cf, biz, fv] = await Promise.all([
       fetchStockDetails(sym).catch(() => ({})),
       fetchStockForecast(sym).catch(() => ({})),
       fetchStockCashFlow(sym).catch(() => ({})),
       isIsraeli ? fetchBizportalData(sym).catch(() => ({})) : Promise.resolve({}),
+      isIsraeli ? Promise.resolve({}) : fetchFinvizData(sym).catch(() => ({})),
     ]);
-    // Merge: stockanalysis first, then Bizportal as fallback for Israeli stocks
+    // Merge order: Yahoo/SA first, then Bizportal (IL) or Finviz (US) as fallback
     details = { ...biz, ...det };
     if (!details.pe && biz.pe) details.pe = biz.pe;
     if (!details.pb && biz.pb) details.pb = biz.pb;
     if (!details.debtEquity && biz.debtEquity) details.debtEquity = biz.debtEquity;
     if (!details.marketCap && biz.marketCap) details.marketCap = biz.marketCap;
     if (!details.divYield && biz.divYield) details.divYield = biz.divYield;
+    // Finviz fills any remaining gaps for US stocks
+    const finvizFields = ["pe","forwardPE","eps","pb","debtEquity","beta","divYield","marketCap","priceTarget","analystRating","revenue","sharesOut","roe","roa","profitMargin"];
+    finvizFields.forEach(k => {
+      const cur = details[k];
+      if ((cur == null || cur === "" || (typeof cur === "number" && isNaN(cur))) && fv[k] != null) {
+        details[k] = fv[k];
+        usedFinviz = true;
+      }
+    });
     forecast = fc; cashflow = cf;
   } catch(e) {}
+  // Annotate source label so user sees Finviz was consulted
+  if (usedFinviz) source += " + Finviz";
 
   let ytdChange = null, m12Change = null, hist10y = null;
   try {

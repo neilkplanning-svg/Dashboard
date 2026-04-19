@@ -24,14 +24,32 @@
   </div>
 </div>
 
-<!-- LOADING OVERLAY -->
+<!-- LOADING OVERLAY (kept for initial load only) -->
 <div id="loadingOverlay" class="loading-overlay hidden">
   <div class="spinner"></div>
   <div class="loading-text">טוען נתונים מ-API...</div>
 </div>
 
-<!-- STATUS BAR -->
+<!-- INLINE LOADING BAR (non-blocking) -->
+<div id="loadingBar" class="loading-bar hidden"></div>
+
+<!-- STATUS BAR (legacy - kept but hidden; toasts used instead) -->
 <div id="statusBar" class="status-bar hidden"></div>
+
+<!-- TOAST CONTAINER -->
+<div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+<!-- COMMAND PALETTE (Ctrl+K) -->
+<div id="cmdOverlay" class="cmd-overlay hidden" onclick="if(event.target===this)closeCmd()">
+  <div class="cmd-modal" role="dialog" aria-label="חיפוש מהיר">
+    <div class="cmd-input-wrap">
+      <span class="cmd-icon">🔍</span>
+      <input id="cmdInput" class="cmd-input" type="text" placeholder="חפש מדד, סקטור, מניה, סחורה, מטבע..." oninput="renderCmdResults()" onkeydown="onCmdKey(event)" autocomplete="off" />
+      <span class="cmd-kbd">Esc</span>
+    </div>
+    <div id="cmdResults" class="cmd-results"></div>
+  </div>
+</div>
 
 <!-- CHART MODAL -->
 <div id="chartModal" class="loading-overlay hidden" onclick="closeChart(event)" style="cursor:pointer">
@@ -64,6 +82,10 @@
       </div>
     </div>
     <div class="header-actions">
+      <button class="btn-icon" onclick="openCmd()" title="חיפוש מהיר (Ctrl+K)">🔍</button>
+      <button class="theme-toggle" onclick="toggleTheme()" title="החלף עיצוב (בהיר/כהה)">
+        <span class="icon-moon">🌙</span><span class="icon-sun">☀️</span>
+      </button>
       <button class="btn-icon" onclick="toggleDataBar()" title="ייצוא/ייבוא נתונים">💾</button>
       <button class="btn-icon" onclick="toggleApiBar()" title="הגדרות API">⚙️</button>
       <span id="authLabel" style="font-size:11px;color:var(--text-faint)"></span>
@@ -136,6 +158,17 @@
   <button class="tab" data-tab="portfolio" onclick="switchTab('portfolio')">💼 תיק אישי</button>
 </nav>
 
+<!-- BOTTOM NAV (mobile) -->
+<nav class="bottom-nav" role="navigation">
+  <button class="bottom-nav-item active" data-tab="macro" onclick="switchTab('macro')"><span class="bn-icon">🌍</span><span>מאקרו</span></button>
+  <button class="bottom-nav-item" data-tab="indices" onclick="switchTab('indices')"><span class="bn-icon">📊</span><span>מדדים</span></button>
+  <button class="bottom-nav-item" data-tab="sectors" onclick="switchTab('sectors')"><span class="bn-icon">🏭</span><span>סקטורים</span></button>
+  <button class="bottom-nav-item" data-tab="commodities" onclick="switchTab('commodities')"><span class="bn-icon">🛢️</span><span>סחורות</span></button>
+  <button class="bottom-nav-item" data-tab="fear" onclick="switchTab('fear')"><span class="bn-icon">😰</span><span>פחד</span></button>
+  <button class="bottom-nav-item" data-tab="scanner" onclick="switchTab('scanner')"><span class="bn-icon">🔎</span><span>סקרינר</span></button>
+  <button class="bottom-nav-item" data-tab="portfolio" onclick="switchTab('portfolio')"><span class="bn-icon">💼</span><span>תיק</span></button>
+</nav>
+
 <!-- CONTENT -->
 <main class="content">
 
@@ -162,7 +195,7 @@
       </div>
     </div>
     <div class="hint">לחץ על שם מדד לגרף + קרנות מחקות · 🔒 = שדה ידני · P/E מ-Yahoo Finance + Stock Analysis</div>
-    <div class="table-wrap"><table id="indicesTable"></table></div>
+    <div class="responsive-table"><div class="table-wrap"><table id="indicesTable"></table></div></div>
   </div>
 
   <!-- SECTORS -->
@@ -278,7 +311,7 @@
       </div>
       <input class="form-input" id="pf-notes" placeholder="הערות..." style="width:100%;margin-top:8px" />
     </div>
-    <div id="portfolioContent"></div>
+    <div id="portfolioContent" class="responsive-table"></div>
     <div class="summary-grid" id="portfolioSummary"></div>
   </div>
 
