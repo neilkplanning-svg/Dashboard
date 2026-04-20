@@ -333,6 +333,13 @@ async function yahooQuoteSummary(symbol) {
       pb:        raw(ks.priceToBook) || null,
       debtEquity: raw(fd.debtToEquity) || null,
       divYield:  raw(sd.dividendYield) != null ? (raw(sd.dividendYield) * 100).toFixed(2) + "%" : null,
+      evEbitda:  raw(ks.enterpriseToEbitda) || null,
+      evRevenue: raw(ks.enterpriseToRevenue) || null,
+      enterpriseValue: raw(ks.enterpriseValue) || null,
+      profitMargin: raw(fd.profitMargins) || null,
+      operatingMargin: raw(fd.operatingMargins) || null,
+      roe:       raw(fd.returnOnEquity) != null ? (raw(fd.returnOnEquity) * 100).toFixed(2) + "%" : null,
+      roa:       raw(fd.returnOnAssets) != null ? (raw(fd.returnOnAssets) * 100).toFixed(2) + "%" : null,
     };
   } catch(e) { return null; }
 }
@@ -417,6 +424,9 @@ async function fetchStockDetails(symbol) {
         divYield:    d.dividendYield || d.divYield || null,
         revenue:     d.revenue || null,
         sharesOut:   d.sharesOutstanding || d.shares || null,
+        evEbitda:    saNum(d.evEbitda) || saNum(d.enterpriseToEbitda) || saNum(d.evToEbitda) || null,
+        evRevenue:   saNum(d.evRevenue) || saNum(d.enterpriseToRevenue) || null,
+        enterpriseValue: d.enterpriseValue || null,
         analystRating: d.analystRating || d.analystConsensus || d.consensus || null,
         priceTarget: saNum(d.analystTarget) || saNum(d.priceTarget) || null,
         analystCount: d.analystCount ? parseInt(d.analystCount) : null,
@@ -440,6 +450,13 @@ async function fetchStockDetails(symbol) {
     debtEquity: yData.debtEquity|| saData.debtEquity|| null,
     divYield:   yData.divYield  || saData.divYield  || null,
     marketCap:  saData.marketCap || (yData.marketCap ? fmtMarketCap(yData.marketCap) : null),
+    evEbitda:   yData.evEbitda  || saData.evEbitda  || null,
+    evRevenue:  yData.evRevenue || saData.evRevenue || null,
+    enterpriseValue: saData.enterpriseValue || (yData.enterpriseValue ? fmtMarketCap(yData.enterpriseValue) : null),
+    roe:        yData.roe       || saData.roe       || null,
+    roa:        yData.roa       || saData.roa       || null,
+    profitMargin:    yData.profitMargin    || saData.profitMargin    || null,
+    operatingMargin: yData.operatingMargin || saData.operatingMargin || null,
   };
 }
 
@@ -454,6 +471,90 @@ function fmtMarketCap(val) {
 // Kept for compatibility — now delegates to fetchStockDetails
 async function fetchStockForecast(symbol) {
   return fetchStockDetails(symbol);
+}
+
+// Fetch historical annual financials (revenue + net income) for 5–8 years
+// Primary: stockanalysis.com JSON API. Fallback: HTML scrape of financials page.
+// Returns { years: ["2024","2023",...], revenue: [...], netIncome: [...] } or null.
+async function fetchStockFinancials(symbol) {
+  if (symbol.includes('.TA')) return null; // stockanalysis.com doesn't cover TASE
+  const sym = symbol.toLowerCase();
+
+  // Try the JSON API first (lightweight, preferred)
+  try {
+    const url = `${STOCK_ANALYSIS_BASE}/api/symbol/s/${sym}/financials?p=annual`;
+    const resp = await fetchWithProxy(url, 15000);
+    const text = await resp.text();
+    const json = JSON.parse(text);
+    const d = json?.data || json;
+    // d may have a "data" object with revenue/netIncome arrays or rows — handle both
+    const rows = d?.rows || d?.financials || d?.data || d;
+    if (rows && typeof rows === "object") {
+      // Try two possible shapes
+      let years = null, revenue = null, netIncome = null;
+      if (Array.isArray(rows.revenue)) { revenue = rows.revenue; }
+      if (Array.isArray(rows.netIncome)) { netIncome = rows.netIncome; }
+      if (Array.isArray(d.year)) { years = d.year.map(String); }
+      else if (Array.isArray(rows.year)) { years = rows.year.map(String); }
+      else if (Array.isArray(d.period)) { years = d.period.map(String); }
+      if (years && revenue && netIncome) {
+        return { years: years.slice(0, 8), revenue: revenue.slice(0, 8), netIncome: netIncome.slice(0, 8), source: "stockanalysis.com" };
+      }
+      // Alternate: rows is an array of {year, revenue, netIncome} objects
+      if (Array.isArray(rows)) {
+        const y = [], r = [], n = [];
+        rows.slice(0, 8).forEach(row => {
+          y.push(String(row.year || row.period || row.date || ""));
+          r.push(row.revenue ?? row.Revenue ?? null);
+          n.push(row.netIncome ?? row.NetIncome ?? row["Net Income"] ?? null);
+        });
+        if (y.some(Boolean) && r.some(v => v != null)) {
+          return { years: y, revenue: r, netIncome: n, source: "stockanalysis.com" };
+        }
+      }
+    }
+  } catch(e) { /* fall through to scrape */ }
+
+  // HTML-scrape fallback: parse the public financials page
+  try {
+    const url = `${STOCK_ANALYSIS_BASE}/stocks/${sym}/financials/`;
+    const resp = await fetchWithProxy(url, 15000);
+    const text = await resp.text();
+
+    // Extract header row of years: <thead>…<th>FY 2024</th>…</thead>
+    const theadMatch = text.match(/<thead[\s\S]*?<\/thead>/i);
+    let years = [];
+    if (theadMatch) {
+      const yrs = [...theadMatch[0].matchAll(/(?:FY\s*)?(\d{4})(?:<|\s)/g)].map(m => m[1]);
+      years = [...new Set(yrs)].slice(0, 8);
+    }
+
+    const extractRow = (label) => {
+      // Find the tr containing the label and grab subsequent numeric cells
+      const re = new RegExp(
+        `<tr[^>]*>\\s*<td[^>]*>[^<]*<(?:span|a|b|strong)?[^>]*>\\s*${label}[^<]*<[\\s\\S]*?<\\/tr>`,
+        'i'
+      );
+      const m = text.match(re);
+      if (!m) return [];
+      // Collect each <td> text content
+      const tds = [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(x => x[1].replace(/<[^>]+>/g, "").trim());
+      // Drop first td (label itself) and any trailing non-numeric tail cells
+      return tds.slice(1).map(v => {
+        const cleaned = v.replace(/[^0-9.\-]/g, "");
+        const n = parseFloat(cleaned);
+        return isNaN(n) ? null : n;
+      });
+    };
+
+    const revenue = extractRow("Revenue");
+    const netIncome = extractRow("Net Income");
+    if (years.length && revenue.length) {
+      return { years, revenue: revenue.slice(0, years.length), netIncome: netIncome.slice(0, years.length), source: "stockanalysis.com (scrape)" };
+    }
+  } catch(e) { /* give up */ }
+
+  return null;
 }
 
 async function fetchStockCashFlow(symbol) {
@@ -1407,6 +1508,10 @@ async function fetchAllData(only) {
       if (!STATE.indices[key].shiller_cape && defaults.shiller_cape) {
         STATE.indices[key].shiller_cape = defaults.shiller_cape;
       }
+      // Forward P/E fallback — if neither Yahoo nor SA returned a value
+      if (!STATE.indices[key].pe_forward && defaults.pe_forward) {
+        STATE.indices[key].pe_forward = defaults.pe_forward;
+      }
     });
   }
 
@@ -1490,13 +1595,15 @@ async function scanStock() {
   let usedFinviz = false;
   try {
     const isIsraeli = sym.includes('.TA');
-    const [det, fc, cf, biz, fv] = await Promise.all([
+    const [det, fc, cf, biz, fv, fin] = await Promise.all([
       fetchStockDetails(sym).catch(() => ({})),
       fetchStockForecast(sym).catch(() => ({})),
       fetchStockCashFlow(sym).catch(() => ({})),
       isIsraeli ? fetchBizportalData(sym).catch(() => ({})) : Promise.resolve({}),
       isIsraeli ? Promise.resolve({}) : fetchFinvizData(sym).catch(() => ({})),
+      isIsraeli ? Promise.resolve(null) : fetchStockFinancials(sym).catch(() => null),
     ]);
+    window._lastFinancials = fin; // stash for render below
     // Merge order: Yahoo/SA first, then Bizportal (IL) or Finviz (US) as fallback
     details = { ...biz, ...det };
     if (!details.pe && biz.pe) details.pe = biz.pe;
@@ -1577,11 +1684,14 @@ async function scanStock() {
         <div class="scanner-item"><span class="scanner-label">P/E:</span> <span>${n2(pe)}</span></div>
         <div class="scanner-item"><span class="scanner-label">P/E עתידי:</span> <span>${n2(fpe)}</span></div>
         <div class="scanner-item"><span class="scanner-label">P/B:</span> <span>${n2(merged.pb)}</span></div>
+        <div class="scanner-item"><span class="scanner-label" title="Enterprise Value to EBITDA — מכפיל שווי עסקי לרווח התפעולי. נמוך = זול יחסית">EV/EBITDA <span class="inline-info-btn" onclick="openInfo('ev_ebitda')" title="הסבר">ℹ️</span>:</span> <span>${n2(merged.evEbitda)}</span></div>
         <div class="scanner-item"><span class="scanner-label">חוב/הון:</span> <span>${n2(merged.debtEquity)}</span></div>
         <div class="scanner-item"><span class="scanner-label">EPS:</span> <span>${merged.eps != null && !isNaN(parseFloat(merged.eps)) ? (sym.includes('.TA') ? '₪' : '$') + parseFloat(merged.eps).toFixed(2) : "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">שווי שוק:</span> <span>${merged.marketCap || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">Enterprise Value:</span> <span>${merged.enterpriseValue || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">בטא:</span> <span>${n2(merged.beta)}</span></div>
         <div class="scanner-item"><span class="scanner-label">דיבידנד:</span> <span>${merged.divYield || "—"}</span></div>
+        <div class="scanner-item"><span class="scanner-label">ROE:</span> <span>${merged.roe || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">הכנסות:</span> <span>${merged.revenue || "—"}</span></div>
         <div class="scanner-item"><span class="scanner-label">מניות:</span> <span>${merged.sharesOut || "—"}</span></div>
       </div>
@@ -1600,6 +1710,51 @@ async function scanStock() {
         <div class="scanner-item"><span class="scanner-label">מרחק משפל 10Y:</span> <span class="positive">${pctLow ? "+" + pctLow + "%" : "—"}</span></div>
       </div>
     </div>`;
+
+  // Historical financials (annual revenue + net income — up to 8 years)
+  let finHTML = "";
+  const fin = window._lastFinancials;
+  if (fin && fin.years && fin.years.length > 1) {
+    const fmtBig = v => {
+      if (v == null || isNaN(v)) return "—";
+      const n = parseFloat(v);
+      const abs = Math.abs(n);
+      if (abs >= 1e9)  return (n / 1e9).toFixed(2) + "B";
+      if (abs >= 1e6)  return (n / 1e6).toFixed(1) + "M";
+      if (abs >= 1e3)  return (n / 1e3).toFixed(1) + "K";
+      return n.toFixed(0);
+    };
+    const yrHeader = fin.years.map(y => `<th>${y}</th>`).join("");
+    const revRow   = fin.revenue.map(v => `<td>${fmtBig(v)}</td>`).join("");
+    const niRow    = fin.netIncome.map(v => {
+      const n = parseFloat(v);
+      const cls = isNaN(n) ? "" : (n >= 0 ? "positive" : "negative");
+      return `<td class="${cls}">${fmtBig(v)}</td>`;
+    }).join("");
+    // Profit margin row
+    const marginRow = fin.revenue.map((r, i) => {
+      const ni = parseFloat(fin.netIncome[i]), rv = parseFloat(r);
+      if (isNaN(ni) || isNaN(rv) || rv === 0) return `<td>—</td>`;
+      const m = (ni / rv * 100);
+      const cls = m >= 0 ? "positive" : "negative";
+      return `<td class="${cls}">${m.toFixed(1)}%</td>`;
+    }).join("");
+    finHTML = `
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+        <h4 style="color:var(--accent);margin-bottom:12px">💰 נתונים פיננסיים היסטוריים (שנתי)</h4>
+        <div class="table-wrap" style="overflow-x:auto">
+          <table class="fin-hist-table">
+            <thead><tr><th>שנה</th>${yrHeader}</tr></thead>
+            <tbody>
+              <tr><td class="label">הכנסות (Revenue)</td>${revRow}</tr>
+              <tr><td class="label">רווח נקי (Net Income)</td>${niRow}</tr>
+              <tr><td class="label">שולי רווח %</td>${marginRow}</tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size:10px;color:var(--text-ghost);margin-top:6px">מקור: ${fin.source}</div>
+      </div>`;
+  }
 
   // Corporate actions
   let corpHTML = "";
@@ -1635,16 +1790,21 @@ async function scanStock() {
         <div class="scanner-item"><span class="scanner-label">מחזור:</span> <span>${q.volume?.toLocaleString() || "—"}</span></div>
       </div>
       ${fundHTML}
+      ${finHTML}
       ${perfHTML}
       ${analystHTML}
       ${corpHTML}
-      <div class="scanner-actions">
+      <div class="scanner-actions" style="flex-wrap:wrap;gap:6px">
         <button class="btn btn-success btn-small" onclick="addFromScanner('${sym}', '${(q.name || "").replace(/'/g, "")}')">+ הוסף לתיק</button>
+        <a href="https://finance.yahoo.com/quote/${sym}/profile" target="_blank" class="btn btn-outline" title="על החברה — תיאור, מנכ״ל, מגזר, מספר עובדים">🏢 פרופיל חברה</a>
         <a href="https://finance.yahoo.com/quote/${sym}" target="_blank" class="btn btn-outline">📊 Yahoo Finance</a>
+        <a href="https://finance.yahoo.com/quote/${sym}/holders" target="_blank" class="btn btn-outline" title="בעלי מניות ומחזיקים עיקריים">👥 בעלי מניות</a>
         <a href="https://stockanalysis.com/stocks/${sym.toLowerCase()}/" target="_blank" class="btn btn-outline">📈 Stock Analysis</a>
+        <a href="https://stockanalysis.com/stocks/${sym.toLowerCase()}/financials/" target="_blank" class="btn btn-outline" title="דוחות כספיים 10+ שנים">📒 דוחות כספיים</a>
         <a href="https://finviz.com/quote.ashx?t=${sym}" target="_blank" class="btn btn-outline">📉 Finviz</a>
         <a href="https://www.google.com/finance/quote/${sym}:NASDAQ" target="_blank" class="btn btn-outline">🔎 Google Finance</a>
         <a href="https://seekingalpha.com/symbol/${sym}" target="_blank" class="btn btn-outline">🔬 Seeking Alpha</a>
+        <a href="https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent((q.name || sym).split(' ').slice(0,3).join(' '))}" target="_blank" class="btn btn-outline" title="ויקיפדיה — היסטוריית החברה, בעלות, ופעילות">📖 ויקיפדיה</a>
         ${sym.includes('.TA') ? `
         <a href="https://www.bizportal.co.il/capitalmarket/quote/generalview/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🇮🇱 Bizportal</a>
         <a href="https://www.tase.co.il/he/market_data/security/${sym.replace('.TA','')}" target="_blank" class="btn btn-outline">🏛 הבורסה</a>

@@ -165,6 +165,24 @@ const REGIONS = [
   { key: "TR", name: "טורקיה", flag: "🇹🇷" },
 ];
 
+// ── Market trading hours (for live open/close indicator) ──────────────────
+// times in local exchange timezone (HH:MM). Days: 0=Sun, 1=Mon, … 6=Sat.
+// Israel's TASE runs Sunday-Thursday (unique); everyone else Mon-Fri.
+const MARKET_HOURS = {
+  US: { name: "NYSE/NASDAQ",   tz: "America/New_York",   open: "09:30", close: "16:00", days: [1,2,3,4,5] },
+  GB: { name: "LSE",           tz: "Europe/London",      open: "08:00", close: "16:30", days: [1,2,3,4,5] },
+  DE: { name: "XETRA",         tz: "Europe/Berlin",      open: "09:00", close: "17:30", days: [1,2,3,4,5] },
+  FR: { name: "Euronext Paris",tz: "Europe/Paris",       open: "09:00", close: "17:30", days: [1,2,3,4,5] },
+  JP: { name: "TSE",           tz: "Asia/Tokyo",         open: "09:00", close: "15:00", days: [1,2,3,4,5], lunch: ["11:30","12:30"] },
+  CN: { name: "SSE",           tz: "Asia/Shanghai",      open: "09:30", close: "15:00", days: [1,2,3,4,5], lunch: ["11:30","13:00"] },
+  IN: { name: "NSE",           tz: "Asia/Kolkata",       open: "09:15", close: "15:30", days: [1,2,3,4,5] },
+  IL: { name: "TASE",          tz: "Asia/Jerusalem",     open: "09:45", close: "17:25", days: [0,1,2,3,4] }, // Sun-Thu
+  BR: { name: "B3",            tz: "America/Sao_Paulo",  open: "10:00", close: "17:00", days: [1,2,3,4,5] },
+  KR: { name: "KRX",           tz: "Asia/Seoul",         open: "09:00", close: "15:30", days: [1,2,3,4,5] },
+  MX: { name: "BMV",           tz: "America/Mexico_City",open: "08:30", close: "15:00", days: [1,2,3,4,5] },
+  TR: { name: "BIST",          tz: "Europe/Istanbul",    open: "10:00", close: "18:00", days: [1,2,3,4,5] },
+};
+
 const MACRO_FIELDS = [
   { key: "gdp_absolute", label: "תמ״ג (USD)", manual: false, fmt: "gdp" },
   { key: "gdp_per_capita", label: "תמ״ג לנפש (USD)", manual: false, fmt: "money" },
@@ -216,20 +234,20 @@ const INDEX_FUNDS = {
 // User can override any field (manual cells). Values are approximate market consensus
 // (Bloomberg/MSCI/Siblis Research, late 2024–early 2026 era).
 const INDEX_PE_DEFAULTS = {
-  SPY:   { pe_historical_avg: "16.50", shiller_cape: "33.00" },
-  QQQ:   { pe_historical_avg: "25.00", shiller_cape: "37.00" },
-  DIA:   { pe_historical_avg: "17.00", shiller_cape: "27.00" },
-  IWM:   { pe_historical_avg: "22.00", shiller_cape: "25.00" },
-  EWU:   { pe_historical_avg: "14.00", shiller_cape: "17.00" },
-  EWG:   { pe_historical_avg: "14.00", shiller_cape: "18.00" },
-  EWQ:   { pe_historical_avg: "15.00", shiller_cape: "22.00" },
-  EWJ:   { pe_historical_avg: "16.00", shiller_cape: "22.00" },
-  FXI:   { pe_historical_avg: "12.00", shiller_cape: "12.00" },
-  INDA:  { pe_historical_avg: "20.00", shiller_cape: "26.00" },
-  EIS:   { pe_historical_avg: "14.00", shiller_cape: "18.00" },
-  TA125: { pe_historical_avg: "13.50", shiller_cape: "18.00" },
-  TA35:  { pe_historical_avg: "12.50", shiller_cape: "16.00" },
-  EEM:   { pe_historical_avg: "14.00", shiller_cape: "15.00" },
+  SPY:   { pe_historical_avg: "16.50", shiller_cape: "33.00", pe_forward: "21.50" },
+  QQQ:   { pe_historical_avg: "25.00", shiller_cape: "37.00", pe_forward: "27.00" },
+  DIA:   { pe_historical_avg: "17.00", shiller_cape: "27.00", pe_forward: "19.50" },
+  IWM:   { pe_historical_avg: "22.00", shiller_cape: "25.00", pe_forward: "17.50" },
+  EWU:   { pe_historical_avg: "14.00", shiller_cape: "17.00", pe_forward: "12.00" },
+  EWG:   { pe_historical_avg: "14.00", shiller_cape: "18.00", pe_forward: "13.50" },
+  EWQ:   { pe_historical_avg: "15.00", shiller_cape: "22.00", pe_forward: "14.00" },
+  EWJ:   { pe_historical_avg: "16.00", shiller_cape: "22.00", pe_forward: "15.00" },
+  FXI:   { pe_historical_avg: "12.00", shiller_cape: "12.00", pe_forward: "10.00" },
+  INDA:  { pe_historical_avg: "20.00", shiller_cape: "26.00", pe_forward: "22.00" },
+  EIS:   { pe_historical_avg: "14.00", shiller_cape: "18.00", pe_forward: "14.50" },
+  TA125: { pe_historical_avg: "13.50", shiller_cape: "18.00", pe_forward: "12.50" },
+  TA35:  { pe_historical_avg: "12.50", shiller_cape: "16.00", pe_forward: "11.50" },
+  EEM:   { pe_historical_avg: "14.00", shiller_cape: "15.00", pe_forward: "12.50" },
 };
 
 const INDEX_FIELDS = [
@@ -371,6 +389,22 @@ const FEAR_INDICATORS = [
 
 // ── Info modal content (click-to-explain) ─────────────────────────────────
 const METRIC_INFO = {
+  ev_ebitda: {
+    title: "EV/EBITDA",
+    what: "Enterprise Value ÷ EBITDA — מכפיל שווי עסקי (שווי שוק + חוב נטו) לרווח התפעולי לפני ריבית, מיסים, פחת והפחתות. אחד המדדים החשובים ביותר להערכת שווי של חברות תעשייתיות ובסיסיות.",
+    how: "EV = שווי שוק + חוב כולל − מזומן. EBITDA = Earnings Before Interest, Taxes, Depreciation, and Amortization. הנתונים נשלפים מ-Yahoo Finance (enterpriseToEbitda) ו-stockanalysis.com.",
+    range: "מתחת ל-10: זול (לפי ענף). 10–15: סביר. מעל 15: יקר. חברות טק בצמיחה גבוהה יכולות להיסחר ב-20–30. השווה תמיד מול חברות באותו סקטור.",
+    use: "מדד מועדף על M&A ואנליסטי בנקי השקעות. לא מושפע ממבנה הון (חוב/הון) כמו P/E — ולכן טוב להשוות חברות עם רמות מינוף שונות. חלש עבור בנקים ופיננסים.",
+    src: "Yahoo Finance · stockanalysis.com",
+  },
+  pe_forward: {
+    title: "P/E עתידי (Forward P/E)",
+    what: "יחס המחיר הנוכחי של המדד/המניה לרווח הצפוי ל-12 החודשים הבאים (EPS Forward), בהתבסס על תחזיות האנליסטים.",
+    how: "Forward P/E = מחיר / ממוצע EPS אנליסטים ל-4 רבעונים הבאים. הנתון נשלף בזמן אמת מ-Yahoo Finance (v7/v10) ו-stockanalysis.com. עבור מדדים ללא נתון חי משתמשים בערכי ברירת מחדל (ניתן לעריכה ידנית).",
+    range: "Forward P/E בדרך כלל נמוך מ-Trailing P/E כי הרווחים צפויים לעלות. טווחים אופייניים: 15–18 S&P 500; 22–27 Nasdaq 100 (QQQ); 10–13 שווקים מתפתחים.",
+    use: "מעיד על מה השוק צופה קדימה — ציפיות גבוהות לצמיחה מיתרגמות ל-Forward P/E גבוה. אם Forward נמוך משמעותית מ-Trailing, האנליסטים מצפים לזינוק ברווחים. Forward גבוה מ-Trailing = ציפייה לירידת רווחים.",
+    src: "Yahoo Finance · stockanalysis.com · אנליסטי Wall Street",
+  },
   pe_historical_avg: {
     title: "P/E ממוצע היסטורי",
     what: "היחס הממוצע ארוך-טווח בין מחיר המדד לרווחי החברות המרכיבות אותו (Trailing 12M).",

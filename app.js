@@ -469,6 +469,12 @@ document.addEventListener("keydown", function(e) {
     e.preventDefault();
     openCmd();
   }
+  if (e.key === "Escape") {
+    const helpM = document.getElementById("helpModal");
+    const infoM = document.getElementById("infoModal");
+    if (helpM && !helpM.classList.contains("hidden")) { closeHelp(); return; }
+    if (infoM && !infoM.classList.contains("hidden")) { closeInfo(); return; }
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -660,6 +666,104 @@ function closeInfo(e) {
   }
 }
 
+// ── HELP MODAL (full dashboard guide) ─────────────────────────────────────
+const HELP_SECTIONS = [
+  {
+    icon: "🌍",
+    title: "מאקרו — נתוני שווקים עולמיים",
+    body: [
+      "טבלה עם 12 מדינות מציגה תמ״ג, תמ״ג לנפש, צמיחה, אינפלציה, ריבית, אבטלה, יחס חוב/תמ״ג, ותשואת אג״ח 10Y.",
+      "ליד כל מדינה מופיע סימון ירוק/אדום המראה האם הבורסה שלה פתוחה כרגע (הסימון מתעדכן אוטומטית כל דקה).",
+      "נתונים נשלפים אוטומטית מ-World Bank, Trading Economics ו-FRED. שדות עם 🔒 הם ידניים בלבד.",
+    ],
+  },
+  {
+    icon: "📊",
+    title: "מדדים — S&P 500, נאסד\"ק, ת\"א 35 וכו'",
+    body: [
+      "כל מדד מציג: מחיר, שינוי 24ש, מכפיל רווח (P/E), מכפיל עתידי, מכפיל ממוצע היסטורי, מדד שילר (CAPE), תשואת דיבידנד, ורווחיות.",
+      "לחיצה על כותרת P/E ממוצע היסטורי או Shiller CAPE (עם ℹ️) תפתח הסבר מלא על המדד — ממה מחושב, טווחי ערכים, ואיך להשתמש בו.",
+      "לחיצה על שם המדד פותחת גרף חודשי/שנתי + רשימת קרנות מחקות בש״ח ובדולר.",
+      "לחצן 📌 רפרנס שומר את המחיר הנוכחי כנקודת השוואה — מאוחר יותר תראה את השינוי באחוזים מהרפרנס.",
+    ],
+  },
+  {
+    icon: "🏭",
+    title: "סקטורים",
+    body: [
+      "סקטורים שונים לפי אזור (ארה״ב, אירופה, ישראל).",
+      "מציג ביצועים של ETF-סקטוריאליים (XLK, XLF, XLV וכו').",
+      "לחיצה על סקטור פותחת גרף.",
+    ],
+  },
+  {
+    icon: "🛢️",
+    title: "סחורות ומטבעות",
+    body: [
+      "נפט, זהב, כסף, גז טבעי, ועוד — כולל שער התחלה של השנה.",
+      "מטבעות כוללים USD/ILS, EUR/ILS, GBP/ILS — מקור: בנק ישראל + Yahoo Finance.",
+    ],
+  },
+  {
+    icon: "😱",
+    title: "מדדי פחד",
+    body: [
+      "Fear & Greed (CNN), VIX, Put/Call Ratio, AAII Sentiment, Buffett Indicator.",
+      "לחיצה על כל כרטיס פותחת הסבר מלא על המדד — מה הוא מודד, איך לפרש, ומה מקור המידע.",
+    ],
+  },
+  {
+    icon: "💼",
+    title: "תיק אישי + סקרינר מניות",
+    body: [
+      "הוסף מניות בודדות לסקרינר לקבלת P/E, יחס חוב, דיבידנד, וכו'. מניות ישראליות (.TA) מומרות מאגורות לשקלים אוטומטית.",
+      "לחצן ➕ השווה פותח פאנל השוואה של עד 4 מניות זו לצד זו — התא הכי טוב בכל שורה מוצג בירוק, הכי גרוע באדום.",
+      "ניתן לייבא/לייצא את התיק ב-JSON או CSV (כפתור 💾 בכותרת).",
+    ],
+  },
+  {
+    icon: "⚙️",
+    title: "הגדרות API + מקורות",
+    body: [
+      "לחצן ⚙️ בכותרת פותח את פאנל מקורות ה-API. יש 3 רמות: אוטומטי (ללא מפתח), חינמי (עם מפתח), ובתשלום.",
+      "המפתחות נשמרים בדפדפן בלבד — לעולם לא נשלחים לשרת.",
+      "רשימת התיעדוף מראה איזה מקור ישמש ראשון לכל סוג נתון.",
+    ],
+  },
+  {
+    icon: "💡",
+    title: "טיפים כלליים",
+    body: [
+      "🔍 Ctrl+K פותח חיפוש מהיר — חפש מדד, סקטור, מניה, סחורה או מטבע.",
+      "🔄 לחצן \"משוך נתונים\" בראש הדף מביא עדכון מלא. כל טאב גם מציג לחצן 🔄 שלו למשיכה של הסעיף בלבד.",
+      "🌙/☀️ כפתור מעבר בין עיצוב כהה לבהיר — נשמר בדפדפן.",
+      "💾 ייצוא/ייבוא לגיבוי — תמיד טוב לייצא JSON לפני שינויים גדולים.",
+      "📈 כמעט כל מספר בדשבורד ניתן לעריכה ידנית — לחץ על התא לערוך.",
+      "ℹ️ חפש את הסמל הזה ליד שדות — לחיצה תפתח הסבר מלא על המדד.",
+    ],
+  },
+];
+
+function openHelp() {
+  const esc = s => (s || "").replace(/</g, "&lt;");
+  let html = `<div class="help-intro">דשבורד זה מרכז נתוני שוק ומאקרו ממקורות מרובים. המדריך להלן יעזור לך לנצל את כל היכולות.</div>`;
+  HELP_SECTIONS.forEach(sec => {
+    html += `<div class="help-section">`;
+    html += `<div class="help-section-title">${sec.icon} ${esc(sec.title)}</div>`;
+    html += `<ul class="help-section-list">`;
+    sec.body.forEach(line => { html += `<li>${esc(line)}</li>`; });
+    html += `</ul></div>`;
+  });
+  html += `<div class="help-footer">נתקלת בבעיה? בדוק את הקונסול (F12) — הדשבורד מתעד בלוג את כל קריאות ה-API.</div>`;
+  document.getElementById("helpBody").innerHTML = html;
+  document.getElementById("helpModal").classList.remove("hidden");
+}
+function closeHelp(e) {
+  if (!e || e.target === document.getElementById("helpModal")) {
+    document.getElementById("helpModal").classList.add("hidden");
+  }
+}
+
 function colorClass(v) {
   const n = parseFloat(v);
   if (isNaN(n)) return "";
@@ -742,18 +846,78 @@ function getRefChange(category, key) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MARKET-OPEN INDICATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Parse "HH:MM" → minutes-since-midnight
+function _hm2min(hm) {
+  const [h, m] = hm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+// Return {open: bool, status: string, name: string} for a region's exchange
+function isMarketOpen(regionKey) {
+  const mh = typeof MARKET_HOURS !== "undefined" ? MARKET_HOURS[regionKey] : null;
+  if (!mh) return { open: false, status: "אין נתוני בורסה", name: "" };
+  try {
+    // Get current time in that exchange's timezone
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: mh.tz, hour12: false,
+      weekday: "short", hour: "2-digit", minute: "2-digit",
+    });
+    const parts = fmt.formatToParts(new Date());
+    const wdShort = parts.find(p => p.type === "weekday").value; // Sun/Mon/…
+    const hh = parts.find(p => p.type === "hour").value;
+    const mm = parts.find(p => p.type === "minute").value;
+    const wdMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const wd = wdMap[wdShort];
+    const nowMin = parseInt(hh, 10) * 60 + parseInt(mm, 10);
+    const nowStr = `${hh}:${mm}`;
+    const openMin = _hm2min(mh.open);
+    const closeMin = _hm2min(mh.close);
+    const isTradingDay = mh.days.includes(wd);
+    if (!isTradingDay) {
+      return { open: false, name: mh.name, status: `${mh.name} • סגור (סוף שבוע) • ${nowStr} מקומי` };
+    }
+    if (nowMin < openMin) {
+      return { open: false, name: mh.name, status: `${mh.name} • סגור • נפתח ב-${mh.open} (כעת ${nowStr})` };
+    }
+    if (nowMin >= closeMin) {
+      return { open: false, name: mh.name, status: `${mh.name} • סגור (נעל ב-${mh.close}) • ${nowStr} מקומי` };
+    }
+    // Check lunch break
+    if (mh.lunch) {
+      const lStart = _hm2min(mh.lunch[0]);
+      const lEnd = _hm2min(mh.lunch[1]);
+      if (nowMin >= lStart && nowMin < lEnd) {
+        return { open: false, name: mh.name, status: `${mh.name} • הפסקת צהריים (${mh.lunch[0]}–${mh.lunch[1]}) • ${nowStr} מקומי` };
+      }
+    }
+    return { open: true, name: mh.name, status: `${mh.name} • פתוח • ${nowStr} מקומי (נסגר ב-${mh.close})` };
+  } catch (e) {
+    return { open: false, name: mh.name || "", status: "שגיאה בחישוב שעות" };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // RENDER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function renderMacro() {
   let html = `<thead><tr><th>אזור</th>`;
   MACRO_FIELDS.forEach(f => html += `<th>${f.label}${f.manual ? " 🔒" : ""}</th>`);
-  html += `</tr></thead><tbody>`;
+  html += `<th>בורסה</th></tr></thead><tbody>`;
   REGIONS.forEach(r => {
-    html += `<tr><td class="label">${r.flag} ${r.name}</td>`;
+    const mkt = isMarketOpen(r.key);
+    const dotCls = mkt.open ? "market-dot market-open" : "market-dot market-closed";
+    const dot = `<span class="${dotCls}" title="${mkt.status}">●</span>`;
+    html += `<tr><td class="label">${dot} ${r.flag} ${r.name}</td>`;
     MACRO_FIELDS.forEach(f => {
       html += `<td>${makeCell("macro", r.key, f.key, STATE.macro[r.key]?.[f.key], false, f.fmt)}</td>`;
     });
+    // Market-status column (more explicit on desktop; dot is also in label)
+    const statusTxt = mkt.open ? "פתוח" : "סגור";
+    html += `<td data-label="בורסה" title="${mkt.status}"><span class="${dotCls}">●</span> <span class="market-status-txt">${statusTxt}</span><div class="market-name">${mkt.name || ""}</div></td>`;
     html += `</tr>`;
   });
   html += `</tbody>`;
@@ -767,7 +931,7 @@ function renderIndices() {
     if (f.ref) {
       html += `<th>${f.label}</th>`;
     } else {
-      const hasInfo = (f.key === "pe_historical_avg" || f.key === "shiller_cape");
+      const hasInfo = (f.key === "pe_historical_avg" || f.key === "shiller_cape" || f.key === "pe_forward");
       if (hasInfo) {
         html += `<th><span onclick="openInfo('${f.key}')" style="cursor:pointer;color:var(--accent)" title="לחץ להסבר על המדד">${f.label}${f.manual ? " 🔒" : ""} ℹ️</span></th>`;
       } else {
@@ -793,7 +957,9 @@ function renderIndices() {
           html += `<td data-label="${f.label}">—</td>`;
         }
       } else {
-        html += `<td data-label="${f.label}">${makeCell("indices", idx.key, f.key, STATE.indices[idx.key]?.[f.key], f.color)}</td>`;
+        const hasInfo = (f.key === "pe_historical_avg" || f.key === "shiller_cape" || f.key === "pe_forward");
+        const infoBtn = hasInfo ? ` <span class="inline-info-btn" onclick="openInfo('${f.key}')" title="לחץ להסבר">ℹ️</span>` : "";
+        html += `<td data-label="${f.label}">${makeCell("indices", idx.key, f.key, STATE.indices[idx.key]?.[f.key], f.color)}${infoBtn}</td>`;
       }
     });
     // Reference point button
@@ -1128,9 +1294,12 @@ async function fetchCompareData(sym) {
     pe: det.pe || null,
     forwardPE: det.forwardPE || null,
     pb: det.pb || null,
+    evEbitda: det.evEbitda || null,
+    enterpriseValue: det.enterpriseValue || null,
     eps: det.eps || null,
     beta: det.beta || null,
     debtEquity: det.debtEquity || null,
+    roe: det.roe || null,
     divYield: det.divYield || null,
     marketCap: det.marketCap || null,
     priceTarget: det.priceTarget || null,
@@ -1170,11 +1339,14 @@ function renderCompareTable() {
     { label: "P/E נוכחי", key: "pe", fmt: v => parseFloat(v).toFixed(2), bestHigh: false }, // lower = cheaper
     { label: "P/E עתידי", key: "forwardPE", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
     { label: "P/B", key: "pb", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
+    { label: "EV/EBITDA", key: "evEbitda", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
     { label: "EPS", key: "eps", fmt: (v, d) => d.currency + parseFloat(v).toFixed(2), bestHigh: true },
     { label: "Beta", key: "beta", fmt: v => parseFloat(v).toFixed(2), bestHigh: null },
     { label: "חוב/הון", key: "debtEquity", fmt: v => parseFloat(v).toFixed(2), bestHigh: false },
+    { label: "ROE", key: "roe", fmt: v => v, bestHigh: null },
     { label: "דיבידנד", key: "divYield", fmt: v => v, bestHigh: null },
     { label: "שווי שוק", key: "marketCap", fmt: v => v, bestHigh: null },
+    { label: "Enterprise Value", key: "enterpriseValue", fmt: v => v, bestHigh: null },
     { label: "יעד אנליסטים", key: "priceTarget", fmt: (v, d) => d.currency + parseFloat(v).toFixed(2), bestHigh: null },
     { label: "קונצנזוס", key: "analystRating", fmt: v => v, bestHigh: null },
   ];
@@ -1228,3 +1400,13 @@ function renderCompareTable() {
 loadState();
 checkAuth();
 renderAll();
+
+// Refresh market-open indicator every 60 seconds while the macro tab is visible
+setInterval(() => {
+  try {
+    const macroPanel = document.getElementById("panel-macro");
+    if (macroPanel && macroPanel.classList.contains("active")) {
+      renderMacro();
+    }
+  } catch (_) {}
+}, 60 * 1000);

@@ -48,6 +48,17 @@
   </div>
 </div>
 
+<!-- HELP MODAL (dashboard guide + tips) -->
+<div id="helpModal" class="info-modal-backdrop hidden" onclick="closeHelp(event)">
+  <div class="info-modal help-modal" onclick="event.stopPropagation()">
+    <h3>
+      <span>📘 מדריך שימוש בדשבורד</span>
+      <button class="info-close" onclick="closeHelp()">✕</button>
+    </h3>
+    <div id="helpBody"></div>
+  </div>
+</div>
+
 <!-- STATUS BAR (legacy - kept but hidden; toasts used instead) -->
 <div id="statusBar" class="status-bar hidden"></div>
 
@@ -98,6 +109,7 @@
     </div>
     <div class="header-actions">
       <button class="btn-icon" onclick="openCmd()" title="חיפוש מהיר (Ctrl+K)">🔍</button>
+      <button class="btn-icon help-btn" onclick="openHelp()" title="מדריך ועזרה">ℹ️</button>
       <button class="theme-toggle" onclick="toggleTheme()" title="החלף עיצוב (בהיר/כהה)">
         <span class="icon-moon">🌙</span><span class="icon-sun">☀️</span>
       </button>
